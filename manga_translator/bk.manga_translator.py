@@ -13,8 +13,6 @@ import numpy as np
 from PIL import Image
 from typing import Optional, Any, List
 import py3langid as langid
-from natsort import natsorted
-
 
 from .config import Config, Colorizer, Detector, Translator, Renderer, Inpainter
 from .utils import (
@@ -302,7 +300,7 @@ class MangaTranslator:
         #todo: fix why is kernel size loaded in the constructor
         self.kernel_size=int(params.get('kernel_size'))
         # Set input files
-        self.input_files = natsorted(params.get('input', []))
+        self.input_files = params.get('input', [])
         # Set save_text
         self.save_text = params.get('save_text', False)
         # Set load_text

@@ -1,0 +1,8 @@
+{
+  "translator": {
+    "translator": "offline"
+  },
+  "detector": { "detector": "ctd" },
+  "ocr": { "text_scale": 32 },
+  "inpainter": { "inpainter": "lama_mpe" }
+}
