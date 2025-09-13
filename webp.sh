@@ -1,5 +1,5 @@
 #!/bin/bash
-TARGET_DIR="${1:-/root/Manga/Output}"  # Use first argument, or default to Output folder
+TARGET_DIR="${1:-/content/Manga/Output}"  # Use first argument, or default to Output folder
 find "$TARGET_DIR" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) -exec sh -c '
 for img; do
     webp_file="${img%.*}.webp"
