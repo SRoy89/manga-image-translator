@@ -1,5 +1,5 @@
 #!/bin/bash
-BASE_DIR="/root/manga-image-translator"
+BASE_DIR="/content/manga-image-translator"
 SCRIPT="$BASE_DIR/watermark.py"
 
 if [ $# -lt 1 ]; then
@@ -8,7 +8,7 @@ if [ $# -lt 1 ]; then
 fi
 
 MODE=$1
-ROOT_DIR=${2:-"/root/Manga/Output"}
+ROOT_DIR=${2:-"/content/Manga/Output"}
 
 # Run Python script
 python3 "$SCRIPT" "$MODE" --root "$ROOT_DIR"
