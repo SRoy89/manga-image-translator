@@ -47,8 +47,8 @@ def process_chapter(chapter_path, watermark, mode="append"):
 def main():
     parser = argparse.ArgumentParser(description="Apply watermark to last page of each manga chapter")
     parser.add_argument("mode", choices=["append", "crop"], help="Watermark mode (append or crop)")
-    parser.add_argument("--root", default="/content/Manga/Output", help="Root Manga folder")
-    parser.add_argument("--watermark", default="/content/manga-image-translator/Watermark.png", help="Path to watermark image")
+    parser.add_argument("--root", default="/kaggle/working/Manga/Output", help="Root Manga folder")
+    parser.add_argument("--watermark", default="/kaggle/working/manga-image-translator/Watermark.png", help="Path to watermark image")
     args = parser.parse_args()
 
     watermark = Image.open(args.watermark).convert("RGBA")
