@@ -5,9 +5,9 @@ import shutil
 import os
 
 # Permanent paths
-INPUT_DIR1 = "/kaggle/working/Input"
-INPUT_DIR2 = "/kaggle/working/Input2"
-OUTPUT_DIR = "/kaggle/working/Output"
+INPUT_DIR1 = "/kaggle/working/Manga/Input"
+INPUT_DIR2 = "/kaggle/working/Manga/Input2"
+OUTPUT_DIR = "/kaggle/working/Manga/Output"
 CONFIG_FILE = "deepl_manhwa.json"
 BACKUP_INTERVAL = 300  # seconds, 5 minutes
 
@@ -44,5 +44,6 @@ t2.start()
 
 t1.join()
 t2.join()
+
 
 print("Both GPU tasks finished. Output is in", OUTPUT_DIR)
