@@ -2,14 +2,13 @@ import subprocess
 import threading
 import time
 import shutil
+import argparse
 import os
 
-# Permanent paths
-INPUT_DIR1 = "/kaggle/working/Manga/Input"
-INPUT_DIR2 = "/kaggle/working/Manga/Input2"
+INPUT_DIR = "/kaggle/working/Manga/Input"
 OUTPUT_DIR = "/kaggle/working/Manga/Output"
 CONFIG_FILE = "deepl_manhwa.json"
-BACKUP_INTERVAL = 300  # seconds, 5 minutes
+BACKUP_INTERVAL = 90  # seconds
 
 def backup_loop():
     while True:
@@ -19,31 +18,33 @@ def backup_loop():
         ])
         time.sleep(BACKUP_INTERVAL)
 
-# Start the backup thread
-threading.Thread(target=backup_loop, daemon=True).start()
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("gpu", choices=["gpu1", "gpu2", "cpu"], help="Select GPU1, GPU2, or CPU")
+    args = parser.parse_args()
 
-def run_translator(gpu_id, input_dir):
+    # === Build translator command ===
     cmd = [
         "python", "-m", "manga_translator", "local",
-        "-i", input_dir,
+        "-i", INPUT_DIR,
         "-o", OUTPUT_DIR,
         "--save-quality", "100",
-        "--config-file", CONFIG_FILE,
-        "--use-gpu"
+        "--config-file", CONFIG_FILE
     ]
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(gpu_id))
-    print(f"Launching translator on GPU {gpu_id} with input {input_dir}")
-    subprocess.run(cmd, env=env)
 
-# Run one process per GPU
-t1 = threading.Thread(target=run_translator, args=(0, INPUT_DIR1))
-t2 = threading.Thread(target=run_translator, args=(1, INPUT_DIR2))
+    if args.gpu == "cpu":
+        print("Running on CPU")
+    else:
+        # Map gpu1 → 0, gpu2 → 1
+        gpu_id = "0" if args.gpu == "gpu1" else "1"
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
+        print(f"Using {args.gpu} (CUDA_VISIBLE_DEVICES={gpu_id})")
+        cmd.append("--use-gpu")
 
-t1.start()
-t2.start()
+    # Run translator
+    subprocess.run(cmd)
 
-t1.join()
-t2.join()
-
-
-print("Both GPU tasks finished. Output is in", OUTPUT_DIR)
+if __name__ == "__main__":
+    # Start the backup thread
+    threading.Thread(target=backup_loop, daemon=True).start()
+    main()
