@@ -31,7 +31,12 @@ def run_translator(gpu_id, input_dir):
     ]
 
     print(f"Starting translator on GPU {gpu_id} with input {input_dir}")
-    subprocess.run(cmd, env=env)
+
+    # Use Popen to stream stdout line by line
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
+    for line in process.stdout:
+        print(f"[GPU {gpu_id}] {line}", end="")
+    process.wait()
 
 if __name__ == "__main__":
     # Start backup thread
