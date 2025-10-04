@@ -1,7 +1,7 @@
 import os
 import shutil
 
-INPUT1 = "/kaggle/working/Manga/Input1"
+INPUT1 = "/kaggle/working/Manga/Input"
 INPUT2 = "/kaggle/working/Manga/Input2"
 
 def is_chapter_folder(path):
