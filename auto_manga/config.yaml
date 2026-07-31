@@ -1,0 +1,16 @@
+storage:
+  raw: "./data/raw"
+  translated: "./data/translated"
+
+download:
+  timeout: 20
+  retries: 3
+  delay: 1.0
+  concurrency: 3
+
+translation:
+  translator: "deepseek"
+  target_language: "VIN"
+
+database:
+  path: "./data/state.db"

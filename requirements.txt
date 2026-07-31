@@ -9,6 +9,7 @@ opencv-python
 pyclipper
 shapely
 requests
+PyYAML>=6.0,<7.0
 cryptography
 freetype-py
 aiohttp
