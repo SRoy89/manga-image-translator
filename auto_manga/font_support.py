@@ -7,7 +7,7 @@ from pathlib import Path
 from fontTools.ttLib import TTFont, TTLibError
 
 
-VIETNAMESE_GLYPHS = tuple(
+_MINIMUM_VIETNAMESE_GLYPHS = tuple(
     dict.fromkeys(
         """
         Ă Â Đ Ê Ô Ơ Ư
@@ -27,6 +27,14 @@ VIETNAMESE_GLYPHS = tuple(
         """.split()
     )
 )
+VIETNAMESE_GLYPHS = tuple(
+    dict.fromkeys(
+        (*_MINIMUM_VIETNAMESE_GLYPHS, *(char.lower() for char in _MINIMUM_VIETNAMESE_GLYPHS))
+    )
+)
+VIETNAMESE_UPPERCASE_GLYPHS = tuple(
+    char for char in VIETNAMESE_GLYPHS if char.isupper()
+)
 
 SUPPORTED_FONT_EXTENSIONS = frozenset({".otf", ".ttc", ".ttf"})
 
@@ -45,6 +53,7 @@ class FontCoverage:
     path: Path
     missing_glyphs: tuple[str, ...]
     is_monospace: bool
+    family_name: str
 
     @property
     def complete(self) -> bool:
@@ -53,6 +62,31 @@ class FontCoverage:
     @property
     def suitable_as_default(self) -> bool:
         return self.complete and not self.is_monospace
+
+    @property
+    def required_count(self) -> int:
+        return len(VIETNAMESE_GLYPHS)
+
+    @property
+    def supported_count(self) -> int:
+        return self.required_count - len(self.missing_glyphs)
+
+    @property
+    def missing_uppercase_glyphs(self) -> tuple[str, ...]:
+        uppercase = set(VIETNAMESE_UPPERCASE_GLYPHS)
+        return tuple(char for char in self.missing_glyphs if char in uppercase)
+
+    @property
+    def uppercase_complete(self) -> bool:
+        return not self.missing_uppercase_glyphs
+
+    @property
+    def uppercase_supported_count(self) -> int:
+        return len(VIETNAMESE_UPPERCASE_GLYPHS) - len(self.missing_uppercase_glyphs)
+
+    @property
+    def uppercase_required_count(self) -> int:
+        return len(VIETNAMESE_UPPERCASE_GLYPHS)
 
 
 def inspect_font(path: str | Path) -> FontCoverage:
@@ -75,7 +109,12 @@ def inspect_font(path: str | Path) -> FontCoverage:
             missing = tuple(
                 char for char in VIETNAMESE_GLYPHS if ord(char) not in codepoints
             )
-            return FontCoverage(font_path, missing, _is_monospace(font, codepoints))
+            return FontCoverage(
+                font_path,
+                missing,
+                _is_monospace(font, codepoints),
+                _font_family_name(font, font_path.stem),
+            )
         except (KeyError, AttributeError, TypeError, ValueError) as exc:
             raise FontInspectionError(
                 f"Cannot read Unicode glyph data from font {font_path}: {exc}"
@@ -97,6 +136,21 @@ def _is_monospace(font: TTFont, codepoints: set[int]) -> bool:
         if glyph_name in metrics
     }
     return len(advances) == 1
+
+
+def _font_family_name(font: TTFont, fallback: str) -> str:
+    name_table = font["name"]
+    for name_id in (16, 4, 1):
+        for record in name_table.names:
+            if record.nameID != name_id:
+                continue
+            try:
+                value = record.toUnicode().strip()
+            except (UnicodeDecodeError, AttributeError):
+                continue
+            if value:
+                return value
+    return fallback
 
 
 def format_missing_glyphs(missing_glyphs: tuple[str, ...]) -> str:

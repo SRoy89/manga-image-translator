@@ -21,6 +21,10 @@ share
 .DS_Store
 dev/
 
+# Local commercial font assets (not licensed for redistribution)
+/fonts/MTO-Astro-City.ttf
+/fonts/MTO Astro City.ttf
+
 # Distribution / packaging
 .Python
 build/

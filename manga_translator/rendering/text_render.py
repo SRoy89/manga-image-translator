@@ -225,10 +225,11 @@ def get_cached_font(path: str) -> freetype.Face:
 def set_font(font_path: str):
     global FONT_SELECTION
     if font_path:
-        selection = [font_path] + FALLBACK_FONTS
+        selection = [font_path]
     else:
         selection = FALLBACK_FONTS
     FONT_SELECTION = [get_cached_font(p) for p in selection]
+    get_char_glyph.cache_clear()
 
 class namespace:
     pass

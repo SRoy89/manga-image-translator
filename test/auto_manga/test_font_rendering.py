@@ -13,9 +13,13 @@ from unittest.mock import patch
 from PIL import Image
 
 from auto_manga.config import ConfigError, TranslationConfig, load_config
-from auto_manga.font_support import inspect_font
+from auto_manga.font_support import inspect_font, inspect_font_directory
 from auto_manga.pipeline.translator import MangaTranslator
-from auto_manga.tools.font_preview import render_contact_sheet, render_preview
+from auto_manga.tools.font_preview import (
+    render_contact_sheet,
+    render_font_comparison,
+    render_preview,
+)
 from manga_translator.rendering import text_render
 from manga_translator.rendering.text_render_eng import Textline, render_lines
 
@@ -23,6 +27,7 @@ from manga_translator.rendering.text_render_eng import Textline, render_lines
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 COMPLETE_FONT = REPOSITORY_ROOT / "fonts" / "Arial-Unicode-Regular.ttf"
 INCOMPLETE_FONT = REPOSITORY_ROOT / "fonts" / "anime_ace_3.ttf"
+MTO_FONT = REPOSITORY_ROOT / "fonts" / "MTO-Astro-City.ttf"
 
 
 def jpeg_bytes() -> bytes:
@@ -52,15 +57,46 @@ def write_config(root: Path, translation_lines: list[str]) -> Path:
 
 
 class RenderingConfigTest(unittest.TestCase):
+    @unittest.skipUnless(MTO_FONT.is_file(), "local MTO Astro City font is not installed")
     def test_repository_defaults_use_uppercase_manga_dialogue_preset(self) -> None:
         config = load_config(REPOSITORY_ROOT / "auto_manga" / "config.yaml")
         self.assertEqual(config.translation.renderer, "manga2eng")
         self.assertTrue(config.translation.uppercase)
-        self.assertEqual(config.translation.font_path, COMPLETE_FONT)
+        self.assertEqual(config.translation.font_path, MTO_FONT)
         self.assertEqual(config.translation.font_size_offset, 1)
         self.assertEqual(config.translation.font_size_minimum, 16)
         self.assertEqual(config.translation.line_spacing, 0.01)
         self.assertTrue(config.translation.disable_font_border)
+
+    @unittest.skipUnless(MTO_FONT.is_file(), "local MTO Astro City font is not installed")
+    def test_mto_astro_city_config_loads_from_its_real_local_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = load_config(
+                write_config(
+                    Path(directory),
+                    [
+                        f"font_path: '{MTO_FONT}'",
+                        "renderer: manga2eng",
+                        "uppercase: true",
+                        "line_spacing: 0.01",
+                        "disable_font_border: true",
+                    ],
+                )
+            )
+        self.assertEqual(config.translation.font_path, MTO_FONT)
+        self.assertEqual(config.translation.renderer, "manga2eng")
+        self.assertTrue(config.translation.uppercase)
+
+    def test_relative_font_path_containing_spaces_resolves_as_one_path(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPOSITORY_ROOT) as directory:
+            root = Path(directory)
+            spaced_font = root / "MTO Astro City.ttf"
+            shutil.copyfile(COMPLETE_FONT, spaced_font)
+            relative_font = spaced_font.relative_to(REPOSITORY_ROOT)
+            config = load_config(
+                write_config(root, [f"font_path: './{relative_font}'"])
+            )
+        self.assertEqual(config.translation.font_path, spaced_font.resolve())
 
     def test_old_config_without_rendering_settings_still_loads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -167,6 +203,18 @@ class RenderingConfigTest(unittest.TestCase):
 
 
 class FontCoverageTest(unittest.TestCase):
+    @unittest.skipUnless(MTO_FONT.is_file(), "local MTO Astro City font is not installed")
+    def test_mto_has_complete_uppercase_and_lowercase_vietnamese_coverage(self) -> None:
+        coverage = inspect_font(MTO_FONT)
+        self.assertIn("Astro City", coverage.family_name)
+        self.assertEqual(coverage.required_count, 134)
+        self.assertEqual(coverage.supported_count, 134)
+        self.assertEqual(coverage.uppercase_required_count, 67)
+        self.assertEqual(coverage.uppercase_supported_count, 67)
+        self.assertTrue(coverage.uppercase_complete)
+        self.assertTrue(coverage.complete)
+        self.assertFalse(coverage.is_monospace)
+
     def test_checker_detects_complete_vietnamese_coverage(self) -> None:
         coverage = inspect_font(COMPLETE_FONT)
         self.assertTrue(coverage.complete)
@@ -178,6 +226,8 @@ class FontCoverageTest(unittest.TestCase):
         self.assertFalse(coverage.complete)
         self.assertIn("Đ", coverage.missing_glyphs)
         self.assertIn("Ỵ", coverage.missing_glyphs)
+        self.assertIn("ỵ", coverage.missing_glyphs)
+        self.assertFalse(coverage.uppercase_complete)
 
 
 class RenderingWrapperTest(unittest.TestCase):
@@ -188,6 +238,8 @@ class RenderingWrapperTest(unittest.TestCase):
             output_path = root / "translated"
             input_path.mkdir()
             (input_path / "001.jpg").write_bytes(jpeg_bytes())
+            spaced_font = root / "MTO Astro City.ttf"
+            shutil.copyfile(COMPLETE_FONT, spaced_font)
             observed: dict[str, object] = {}
 
             def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -202,16 +254,16 @@ class RenderingWrapperTest(unittest.TestCase):
             config = TranslationConfig(
                 "deepseek",
                 "VIN",
-                font_path=COMPLETE_FONT,
+                font_path=spaced_font,
                 renderer="manga2eng",
                 alignment="center",
                 direction="horizontal",
-                uppercase=False,
-                font_size_offset=2,
-                font_size_minimum=18,
+                uppercase=True,
+                font_size_offset=1,
+                font_size_minimum=16,
                 no_hyphenation=True,
-                line_spacing=-0.05,
-                disable_font_border=False,
+                line_spacing=0.01,
+                disable_font_border=True,
             )
             secret = "deepseek-secret-must-not-leak"
             with patch.dict(os.environ, {"DEEPSEEK_API_KEY": secret}), self.assertLogs(
@@ -227,8 +279,9 @@ class RenderingWrapperTest(unittest.TestCase):
             self.assertIsInstance(command, list)
             self.assertNotIn("shell", kwargs)
             self.assertEqual(
-                command[command.index("--font-path") + 1], str(COMPLETE_FONT)
+                command[command.index("--font-path") + 1], str(spaced_font)
             )
+            self.assertIn(str(spaced_font), command)
             self.assertLess(command.index("--font-path"), command.index("local"))
             self.assertEqual(
                 generated_config,
@@ -238,12 +291,12 @@ class RenderingWrapperTest(unittest.TestCase):
                         "renderer": "manga2eng",
                         "alignment": "center",
                         "direction": "horizontal",
-                        "uppercase": False,
-                        "font_size_offset": 2,
-                        "font_size_minimum": 18,
+                        "uppercase": True,
+                        "font_size_offset": 1,
+                        "font_size_minimum": 16,
                         "no_hyphenation": True,
-                        "line_spacing": -0.05,
-                        "disable_font_border": False,
+                        "line_spacing": 0.01,
+                        "disable_font_border": True,
                     },
                 },
             )
@@ -267,8 +320,37 @@ class FontPreviewTest(unittest.TestCase):
             )
             with Image.open(output) as image:
                 self.assertEqual(image.format, "PNG")
-                self.assertEqual(image.size, (3190, 2815))
+                font_count = len(inspect_font_directory(REPOSITORY_ROOT / "fonts"))
+                self.assertEqual(image.size, (3190, 155 + 380 * font_count))
                 self.assertIsNotNone(image.getbbox())
+
+    def test_focused_font_comparison_renders_without_network(self) -> None:
+        preferred = MTO_FONT if MTO_FONT.is_file() else COMPLETE_FONT
+        fonts = [preferred, INCOMPLETE_FONT, COMPLETE_FONT]
+        with tempfile.TemporaryDirectory() as directory:
+            output = render_font_comparison(
+                fonts, Path(directory) / "font-comparison.png"
+            )
+            with Image.open(output) as image:
+                self.assertEqual(image.format, "PNG")
+                font_count = len(dict.fromkeys(path.resolve() for path in fonts))
+                self.assertEqual(image.size, (3660, 180 + 520 * font_count))
+                self.assertIsNotNone(image.getbbox())
+
+    def test_uppercase_preview_reports_settings_and_uses_one_column(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            spaced_font = Path(directory) / "MTO Astro City.ttf"
+            shutil.copyfile(COMPLETE_FONT, spaced_font)
+            output = render_preview(
+                spaced_font,
+                Path(directory) / "uppercase-preview.png",
+                uppercase_only=True,
+                font_size_offset=1,
+                line_spacing=-1,
+                disable_font_border=True,
+            )
+            with Image.open(output) as image:
+                self.assertEqual(image.size, (720, 1160))
 
     def test_manga2eng_text_remains_visible_when_border_is_disabled(self) -> None:
         text_render.set_font(str(COMPLETE_FONT))
@@ -285,6 +367,12 @@ class FontPreviewTest(unittest.TestCase):
         )
         alpha = rendered.getchannel("A")
         self.assertIsNotNone(alpha.getbbox())
+
+    def test_explicit_core_font_disables_silent_fallback_selection(self) -> None:
+        selected_font = MTO_FONT if MTO_FONT.is_file() else COMPLETE_FONT
+        text_render.set_font(str(selected_font))
+        self.assertEqual(len(text_render.FONT_SELECTION), 1)
+        self.assertNotEqual(text_render.FONT_SELECTION[0].get_char_index("Đ"), 0)
 
 
 if __name__ == "__main__":

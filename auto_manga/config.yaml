@@ -22,7 +22,7 @@ translation:
   translator: "deepseek"
   target_language: "VIN"
 
-  font_path: "./fonts/Arial-Unicode-Regular.ttf"
+  font_path: "./fonts/MTO-Astro-City.ttf"
   renderer: "manga2eng"
   alignment: "center"
   direction: "horizontal"

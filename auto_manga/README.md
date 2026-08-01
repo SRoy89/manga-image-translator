@@ -81,15 +81,15 @@ Keys are read by the existing translator core. They are never stored in YAML or 
 
 ## Vietnamese lettering and fonts
 
-The repository configuration selects compact uppercase dialogue with the core's
-bubble-aware renderer:
+This installation uses the local MTO Astro City Regular file for compact uppercase
+dialogue with the core's bubble-aware renderer:
 
 ```yaml
 translation:
   translator: "deepseek"
   target_language: "VIN"
 
-  font_path: "./fonts/Arial-Unicode-Regular.ttf"
+  font_path: "./fonts/MTO-Astro-City.ttf"
   renderer: "manga2eng"
   alignment: "center"
   direction: "horizontal"
@@ -108,37 +108,31 @@ from the current working directory. Run the commands from the repository root, w
 `--font-path` CLI argument and writes the remaining values to the core JSON `render`
 section. It uses a subprocess argument list and never invokes a shell.
 
-`anime_ace_3.ttf` is visually the closest existing candidate to clean uppercase
-scanlation lettering, but it is not valid for Vietnamese: the sample itself needs glyphs
-such as `Đ`, `Ữ`, `Ờ`, `Ế`, `Ề`, `Ọ`, and `Ố` that the font does not contain. It is never
-silently combined with fallback glyphs. `Arial-Unicode-Regular.ttf` remains the default
-because it is the only proportional font already in this repository with complete
-coverage of the required Vietnamese glyphs. It is a compatibility fallback, not an exact
-match for Anime Ace, CC Wild Words, or any font in a supplied reference image. No new font
-file is bundled by this automation layer.
-
-For a closer result, provide another licensed, medium-weight, moderately condensed
-TTF/OTF/TTC font with complete Vietnamese coverage. A true monospace font is not
-recommended for dialogue: equal character widths make short words and punctuation look
-mechanical and waste space inside speech bubbles. Small handwritten or italic side
-comments are not classified into a second font automatically.
+The exact file found locally is `fonts/MTO-Astro-City.ttf`; the family metadata says
+`MTO Astro City Regular`. The binary is intentionally ignored by Git. Its metadata only
+states `Copyright (c) 2011 by Kandy Pham. All rights reserved.` and contains no license
+grant or license URL, so this repository does not redistribute it. Each installation must
+provide its own lawfully licensed local copy. A differently named local file, including a
+path such as `./fonts/MTO Astro City.ttf`, also works when quoted in YAML.
 
 Font validation is fail-fast. A configured font that is missing, is a directory, has an
 unsupported extension, cannot be parsed, or lacks any required Vietnamese glyph stops
-configuration loading with a specific error. The core therefore cannot silently mix in
-fallback glyphs or render missing-character boxes for a configured font.
+configuration loading with a specific error. When an explicit font is configured, the
+core now loads only that face; its system fallback chain is used only when no font path is
+provided. A sentence therefore cannot silently mix MTO with Arial, MS Gothic, or another
+fallback face.
 
-The checked-in font audit (face zero, matching how the core opens a font path) is:
+The audit checks 134 precomposed Vietnamese characters: 67 uppercase and their 67
+lowercase equivalents. Face zero is inspected, matching how the core opens font paths:
 
-| Font | Complete Vietnamese | Missing glyphs | Suitable default |
-| --- | --- | --- | --- |
-| `Arial-Unicode-Regular.ttf` | yes | none | yes; proportional compatibility fallback |
-| `NotoSansMonoCJK-VF.ttf.ttc` | yes | none | no; true monospace |
-| `anime_ace.ttf` | no | `Ă Đ Ơ Ư ă đ ơ ư Ả Ạ Ắ Ằ Ẳ Ẵ Ặ Ấ Ầ Ẩ Ẫ Ậ Ẻ Ẽ Ẹ Ế Ề Ể Ễ Ệ Ỉ Ĩ Ị Ỏ Ọ Ố Ồ Ổ Ỗ Ộ Ớ Ờ Ở Ỡ Ợ Ủ Ũ Ụ Ứ Ừ Ử Ữ Ự Ỳ Ỷ Ỹ Ỵ` | no |
-| `anime_ace_3.ttf` | no | `Ă Đ Ơ Ư ă đ ơ ư Ả Ạ Ắ Ằ Ẳ Ẵ Ặ Ấ Ầ Ẩ Ẫ Ậ Ẻ Ẽ Ẹ Ế Ề Ể Ễ Ệ Ỉ Ĩ Ị Ỏ Ọ Ố Ồ Ổ Ỗ Ộ Ớ Ờ Ở Ỡ Ợ Ủ Ũ Ụ Ứ Ừ Ử Ữ Ự Ỳ Ỷ Ỹ Ỵ` | no |
-| `comic shanns 2.ttf` | no | `Đ Ơ Ư đ ơ ư Ả Ạ Ắ Ằ Ẳ Ẵ Ặ Ấ Ầ Ẩ Ẫ Ậ Ẻ Ẽ Ẹ Ế Ề Ể Ễ Ệ Ỉ Ị Ỏ Ọ Ố Ồ Ổ Ỗ Ộ Ớ Ờ Ở Ỡ Ợ Ủ Ụ Ứ Ừ Ử Ữ Ự Ỷ Ỹ Ỵ` | no; fixed-width Latin metrics and incomplete coverage |
-| `msgothic.ttc` | no | `Ơ Ư ơ ư Ả Ạ Ắ Ằ Ẳ Ẵ Ặ Ấ Ầ Ẩ Ẫ Ậ Ẻ Ẽ Ẹ Ế Ề Ể Ễ Ệ Ỉ Ị Ỏ Ọ Ố Ồ Ổ Ỗ Ộ Ớ Ờ Ở Ỡ Ợ Ủ Ụ Ứ Ừ Ử Ữ Ự Ỷ Ỹ Ỵ` | no |
-| `msyh.ttc` | no | `Ơ Ư ơ ư Ả Ạ Ắ Ằ Ẳ Ẵ Ặ Ấ Ầ Ẩ Ẫ Ậ Ẻ Ẽ Ẹ Ế Ề Ể Ễ Ệ Ỉ Ĩ Ị Ỏ Ọ Ố Ồ Ổ Ỗ Ộ Ớ Ờ Ở Ỡ Ợ Ủ Ụ Ứ Ừ Ử Ữ Ự Ỷ Ỹ Ỵ` | no |
+| Font | Coverage | Uppercase | Metrics | Production choice |
+| --- | --- | --- | --- | --- |
+| `MTO-Astro-City.ttf` | 134/134 | 67/67 | proportional | preferred local default |
+| `Arial-Unicode-Regular.ttf` | 134/134 | 67/67 | proportional | compatible generic fallback |
+| `NotoSansMonoCJK-VF.ttf.ttc` | 134/134 | 67/67 | monospace | rejected for dialogue style |
+| `anime_ace_3.ttf` | 32/134 | 16/67 | proportional | rejected; missing Vietnamese |
+
+Run `--report-fonts` for exact missing-character lists for every local candidate.
 
 The rendering controls have these effects:
 
@@ -157,44 +151,52 @@ The rendering controls have these effects:
   core `default` renderer; `manga2eng` performs its own bubble fitting and downscaling.
 - `no_hyphenation` disables the normal renderer's dictionary-based word splitting.
   `manga2eng` already wraps whole segmented words.
-- `line_spacing` is a multiplier of the current font size, not a pixel count. `0.01`
-  keeps the block compact while giving stacked uppercase Vietnamese marks reliable
-  clearance in the real `manga2eng` renderer. `-0.05` was readable but left some marks
-  too close at full size, `-0.10` crowded them, and the proposed `-1` collapses successive
-  baselines completely. Values outside `-0.5..2.0` are rejected.
-- `uppercase: true` matches the main-dialogue target. The selected font was checked for
-  both uppercase and lowercase Vietnamese coverage before enabling it.
+- `line_spacing` is a multiplier of the current font size, not a pixel count. MTO was
+  tested at `-1`, `-0.10`, `-0.05`, `0.01`, and `0.08` through the real renderer. `-1`
+  collapses the lines, negative values crowd stacked accents, and `0.01` is the compact
+  readable choice. Production values outside `-0.5..2.0` are rejected; the preview tool
+  permits `-2/-1` only to make those failure modes visible.
+- `uppercase: true` matches the main-dialogue target. To preserve mixed case, set it to
+  `false` and switch to `renderer: default`; `manga2eng` itself always uppercases text.
 - `disable_font_border: true` produces clean black text in white bubbles. Set it to
   `false` for patterned or uncertain backgrounds that need a white contrast outline.
 
-Generate a local, network-free comparison of mixed case and uppercase lettering:
+Generate a local, network-free MTO preview. Paths containing spaces are passed as one
+argument when quoted:
 
 ```bash
 python3 -m auto_manga.tools.font_preview \
-  --font ./fonts/Arial-Unicode-Regular.ttf \
-  --output ./font-preview.png \
+  --font "./fonts/MTO-Astro-City.ttf" \
+  --output ./font-preview-mto-astro-city.png \
+  --uppercase \
+  --font-size-offset 1 \
+  --line-spacing 0.01 \
+  --disable-font-border \
   --report-fonts
 ```
 
 The report lists coverage, missing glyphs, monospace detection, and default suitability
-for every font in `fonts/`. Add `--disable-font-border`, adjust `--font-size`, or adjust
-the core-style `--line-spacing` multiplier to compare another preview. The utility only
-uses Pillow/fontTools; it never invokes OCR, a crawler, MangaDex, or a translator API.
+for every font in `fonts/`. Omit `--uppercase` to see mixed case and uppercase side by
+side. Adjust `--font-size`, `--font-size-offset`, or `--line-spacing`; omit
+`--disable-font-border` to inspect the white outline used on noisy backgrounds. The
+utility only uses Pillow/fontTools and never invokes OCR, MangaDex, or a translator API.
 
-Generate the all-font contact sheet used to select the preset:
+Generate the focused MTO/Anime Ace/Arial comparison:
 
 ```bash
 python3 -m auto_manga.tools.font_preview \
-  --contact-sheet \
-  --output ./vietnamese-font-contact-sheet.png \
+  --compare-font "./fonts/MTO-Astro-City.ttf" \
+  --compare-font "./fonts/anime_ace_3.ttf" \
+  --compare-font "./fonts/Arial-Unicode-Regular.ttf" \
+  --output ./font-comparison-mto-astro-city.png \
   --report-fonts
 ```
 
-Every row renders directly with that font, including visible missing-glyph boxes for
-incomplete candidates; samples never borrow characters from Arial or another fallback.
-The columns compare mixed case, uppercase, border on/off, and spacing multipliers
-`-1.00`, `-0.05`, and `+0.08`. The intentionally broken `-1.00` column documents why
-that proposed value is not used in production.
+Every row renders directly with that file and never borrows missing glyphs. The columns
+show mixed case, uppercase, border on/off, spacing `-2/-1/0`, and offsets `-2/0/+1/+3`.
+These offsets affect only the development preview: the production `manga2eng` renderer
+performs its own automatic fitting. The broader `--contact-sheet` mode remains available
+to compare every font in `fonts/`.
 
 Changing a font does not invalidate an already valid translated folder. `resume` will
 skip that output. To rerender one chapter safely, move its translated folder to a backup
