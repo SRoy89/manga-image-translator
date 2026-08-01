@@ -430,7 +430,20 @@ class TranslatorWrapperTest(unittest.TestCase):
             self.assertNotIn("shell", kwargs)
             self.assertEqual(
                 observed["config"],
-                {"translator": {"translator": "deepseek", "target_lang": "VIN"}},
+                {
+                    "translator": {"translator": "deepseek", "target_lang": "VIN"},
+                    "render": {
+                        "renderer": "default",
+                        "alignment": "auto",
+                        "direction": "auto",
+                        "uppercase": False,
+                        "font_size_offset": 0,
+                        "font_size_minimum": -1,
+                        "no_hyphenation": False,
+                        "line_spacing": None,
+                        "disable_font_border": False,
+                    },
+                },
             )
             self.assertTrue(validate_translated_output(input_path, output_path))
 

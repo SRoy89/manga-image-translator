@@ -114,7 +114,9 @@ def render_textblock_list_eng(
     downscale_constraint: float = 0.7,
     original_img: np.ndarray = None,
     max_font_size: int = 300,
-    bounds_padding: int = 3
+    bounds_padding: int = 3,
+    line_spacing: float = 0.01,
+    disable_font_border: bool = False,
 ) -> np.ndarray:
     """Render text blocks onto image"""
 
@@ -153,6 +155,8 @@ def render_textblock_list_eng(
             continue
 
         sw, line_height, delimiter_len, base_length, word_lengths = calculate_font_values(font, words)
+        if disable_font_border:
+            sw = 0
         ballon_area = (ballon_mask > 0).sum()
         rx, ry = 0, 0
 
@@ -197,11 +201,13 @@ def render_textblock_list_eng(
                     font = ImageFont.truetype(font_path, font_size)
                     words = merge_seg_eng(region.translation, font, region.xywh[2])
                     sw, line_height, delimiter_len, base_length, word_lengths = calculate_font_values(font, words)
+                    if disable_font_border:
+                        sw = 0
 
         # Create text layer
         bbox_center_x, bbox_center_y = (xyxy[0] + xyxy[2]) / 2, (xyxy[1] + xyxy[3]) / 2
         words_text = '\n'.join(words)
-        line_spacing_px = int(font.size * 0.01)
+        line_spacing_px = int(font.size * (line_spacing or 0.01))
         padding = (font.size + sw) * 4
 
         # Create temporary layer to measure text size
@@ -253,25 +259,26 @@ def render_textblock_list_eng(
     img_pil = img_pil.convert("RGB")
     img_array = np.array(img_pil)
 
-    for rotated_layer, bbox, sw in zip(rotated_text_layers, bboxes, sws):
-        paste_x, paste_y = bbox[0][:2]
+    if not disable_font_border:
+        for rotated_layer, bbox, sw in zip(rotated_text_layers, bboxes, sws):
+            paste_x, paste_y = bbox[0][:2]
 
-        # Create stroke mask
-        text_mask = (np.array(rotated_layer).sum(axis=-1) > 0)
-        text_mask = widen_mask_opencv_round(text_mask, sw)
+            # Create stroke mask
+            text_mask = (np.array(rotated_layer).sum(axis=-1) > 0)
+            text_mask = widen_mask_opencv_round(text_mask, sw)
 
-        # Clip mask to image bounds
-        mask_h, mask_w = text_mask.shape
-        y1, y2 = max(0, paste_y), min(y, paste_y + mask_h)
-        x1, x2 = max(0, paste_x), min(x, paste_x + mask_w)
+            # Clip mask to image bounds
+            mask_h, mask_w = text_mask.shape
+            y1, y2 = max(0, paste_y), min(y, paste_y + mask_h)
+            x1, x2 = max(0, paste_x), min(x, paste_x + mask_w)
 
-        if y2 > y1 and x2 > x1:
-            mask_y1 = max(0, -paste_y)
-            mask_y2 = mask_y1 + (y2 - y1)
-            mask_x1 = max(0, -paste_x)
-            mask_x2 = mask_x1 + (x2 - x1)
+            if y2 > y1 and x2 > x1:
+                mask_y1 = max(0, -paste_y)
+                mask_y2 = mask_y1 + (y2 - y1)
+                mask_x1 = max(0, -paste_x)
+                mask_x2 = mask_x1 + (x2 - x1)
 
-            img_array[y1:y2, x1:x2][text_mask[mask_y1:mask_y2, mask_x1:mask_x2], :3] = stroke_color
+                img_array[y1:y2, x1:x2][text_mask[mask_y1:mask_y2, mask_x1:mask_x2], :3] = stroke_color
 
     img_pil = Image.fromarray(img_array)
     for layer, bbox in zip(rotated_text_layers, bboxes):

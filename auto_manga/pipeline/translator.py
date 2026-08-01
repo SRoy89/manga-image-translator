@@ -61,21 +61,38 @@ class MangaTranslator:
             "translator": {
                 "translator": self.config.translator,
                 "target_lang": self.config.target_language,
-            }
+            },
+            "render": {
+                "renderer": self.config.renderer,
+                "alignment": self.config.alignment,
+                "direction": self.config.direction,
+                "uppercase": self.config.uppercase,
+                "font_size_offset": self.config.font_size_offset,
+                "font_size_minimum": self.config.font_size_minimum,
+                "no_hyphenation": self.config.no_hyphenation,
+                "line_spacing": self.config.line_spacing,
+                "disable_font_border": self.config.disable_font_border,
+            },
         }
         config_path = self._write_core_config(core_config)
         command = [
             self.config.python_executable or sys.executable,
             "-m",
             "manga_translator",
-            "local",
-            "-i",
-            str(input_path),
-            "-o",
-            str(output_path),
-            "--config-file",
-            str(config_path),
         ]
+        if self.config.font_path is not None:
+            command.extend(["--font-path", str(self.config.font_path)])
+        command.extend(
+            [
+                "local",
+                "-i",
+                str(input_path),
+                "-o",
+                str(output_path),
+                "--config-file",
+                str(config_path),
+            ]
+        )
 
         try:
             result = self.runner(

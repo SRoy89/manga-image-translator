@@ -52,7 +52,7 @@ def render_lines(
     canvas_w: int,
     font_size: int,
     stroke_width: int,
-    line_spacing: int = 0.01,
+    line_spacing: float = 0.01,
     fg: Tuple[int] = (0, 0, 0),
     bg: Tuple[int] = (255, 255, 255)) -> Image.Image:
 
@@ -339,7 +339,7 @@ def render_textblock_list_eng(
     font_color = (0, 0, 0),
     stroke_color = (255, 255, 255),
     delimiter: str = ' ',
-    line_spacing: int = 0.01,
+    line_spacing: float = 0.01,
     stroke_width: float = 0.1,
     size_tol: float = 1.0,
     ballonarea_thresh: float = 2,
@@ -357,7 +357,7 @@ def render_textblock_list_eng(
 
     def calculate_font_values(font_size: int, words: List[str]):
         font_size = int(font_size)
-        sw = int(font_size * stroke_width)
+        sw = 0 if disable_font_border else int(font_size * stroke_width)
         line_height = int(font_size * 0.8)
         delimiter_glyph = get_char_glyph(delimiter, font_size, 0)
         delimiter_len = delimiter_glyph.advance.x >> 6

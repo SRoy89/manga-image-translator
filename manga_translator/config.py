@@ -176,7 +176,7 @@ class RenderConfig(BaseModel):
     """If renderer should be splitting up words using a hyphen character (-)"""
     font_color: Optional[str] = None
     """Overwrite the text fg/bg color detected by the OCR model. Use hex string without the "#" such as FFFFFF for a white foreground or FFFFFF:000000 to also have a black background around the text."""
-    line_spacing: Optional[int] = None
+    line_spacing: Optional[float] = None
     """Line spacing is font_size * this value. Default is 0.01 for horizontal text and 0.2 for vertical."""
     font_size: Optional[int] = None
     """Use fixed font size for rendering"""

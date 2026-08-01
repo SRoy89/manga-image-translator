@@ -12,6 +12,7 @@ requests
 PyYAML>=6.0,<7.0
 cryptography
 freetype-py
+fonttools>=4.0,<5.0
 aiohttp
 tqdm
 deepl
