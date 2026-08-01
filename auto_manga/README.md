@@ -81,7 +81,8 @@ Keys are read by the existing translator core. They are never stored in YAML or 
 
 ## Vietnamese lettering and fonts
 
-The repository configuration selects horizontal, centered, automatically fitted lettering:
+The repository configuration selects compact uppercase dialogue with the core's
+bubble-aware renderer:
 
 ```yaml
 translation:
@@ -89,16 +90,16 @@ translation:
   target_language: "VIN"
 
   font_path: "./fonts/Arial-Unicode-Regular.ttf"
-  renderer: "default"
+  renderer: "manga2eng"
   alignment: "center"
   direction: "horizontal"
 
-  uppercase: false
-  font_size_offset: 2
-  font_size_minimum: 18
+  uppercase: true
+  font_size_offset: 1
+  font_size_minimum: 16
   no_hyphenation: true
-  line_spacing: -0.05
-  disable_font_border: false
+  line_spacing: 0.01
+  disable_font_border: true
 ```
 
 Relative font and storage paths follow the existing project convention: they resolve
@@ -107,13 +108,20 @@ from the current working directory. Run the commands from the repository root, w
 `--font-path` CLI argument and writes the remaining values to the core JSON `render`
 section. It uses a subprocess argument list and never invokes a shell.
 
-`Arial-Unicode-Regular.ttf` is the default because it is the only proportional font
-already in this repository with complete coverage of the required Vietnamese glyphs.
-It is a compatibility fallback, not an ideal hand-lettered comic face. No new font file
-is bundled by this automation layer. For a more distinctive result, provide another
-licensed TTF/OTF/TTC font with complete Vietnamese coverage. A true monospace font is
-not recommended for dialogue: equal character widths make short words and punctuation
-look mechanical and waste space inside speech bubbles.
+`anime_ace_3.ttf` is visually the closest existing candidate to clean uppercase
+scanlation lettering, but it is not valid for Vietnamese: the sample itself needs glyphs
+such as `Đ`, `Ữ`, `Ờ`, `Ế`, `Ề`, `Ọ`, and `Ố` that the font does not contain. It is never
+silently combined with fallback glyphs. `Arial-Unicode-Regular.ttf` remains the default
+because it is the only proportional font already in this repository with complete
+coverage of the required Vietnamese glyphs. It is a compatibility fallback, not an exact
+match for Anime Ace, CC Wild Words, or any font in a supplied reference image. No new font
+file is bundled by this automation layer.
+
+For a closer result, provide another licensed, medium-weight, moderately condensed
+TTF/OTF/TTC font with complete Vietnamese coverage. A true monospace font is not
+recommended for dialogue: equal character widths make short words and punctuation look
+mechanical and waste space inside speech bubbles. Small handwritten or italic side
+comments are not classified into a second font automatically.
 
 Font validation is fail-fast. A configured font that is missing, is a directory, has an
 unsupported extension, cannot be parsed, or lacks any required Vietnamese glyph stops
@@ -134,27 +142,30 @@ The checked-in font audit (face zero, matching how the core opens a font path) i
 
 The rendering controls have these effects:
 
-- `renderer: default` is selected because it respects mixed case, alignment, direction,
-  font-size tuning, hyphenation, spacing, and border settings together. It automatically
-  fits each detected region instead of forcing one fixed font size.
-- `manga2eng` is an optional horizontal bubble-aware renderer, but this core version
-  uppercases text unconditionally inside `seg_eng` and ignores `font_size_offset`,
-  `font_size_minimum`, alignment, direction, and hyphenation settings. It is therefore
-  not the Vietnamese default even though its bubble layout can be useful for deliberate
-  all-caps lettering. `manga2eng_pillow` has similar renderer-specific constraints.
+- `renderer: manga2eng` is selected for the new deliberate all-caps target. It detects
+  the available bubble area, wraps whole words, centers the lines, and downscales per
+  region rather than forcing one fixed font size.
+- This core version uppercases inside `seg_eng` and ignores `font_size_offset`,
+  `font_size_minimum`, alignment, direction, and hyphenation when `manga2eng` is active.
+  The configured `1` and `16` remain useful if switching back to `renderer: default`, but
+  they do not tune `manga2eng` itself. `manga2eng_pillow` has similar constraints.
+- Use `renderer: default` when mixed case or direct control over alignment, direction,
+  minimum size, offset, and hyphenation is more important than bubble-aware wrapping.
 - `alignment` and `direction` force the default renderer's region behavior.
 - `font_size_offset` adjusts each detected size without imposing one fixed size.
   `font_size_minimum` prevents unreadably small output. These two settings affect the
   core `default` renderer; `manga2eng` performs its own bubble fitting and downscaling.
 - `no_hyphenation` disables the normal renderer's dictionary-based word splitting.
   `manga2eng` already wraps whole segmented words.
-- `line_spacing` is a multiplier of the current font size, not a pixel count. `-0.05`
-  tightens lines by 5%. Values outside `-0.5..2.0` are rejected; the old-looking `-2`
-  example would make lines overlap severely.
-- `uppercase: false` preserves mixed-case Vietnamese. Uppercase remains available, but
-  is not forced because all-caps accents are denser and less readable in small bubbles.
-- `disable_font_border: false` keeps the normal white scanlation border. Set it to
-  `true` only when the bubble/background already provides enough contrast.
+- `line_spacing` is a multiplier of the current font size, not a pixel count. `0.01`
+  keeps the block compact while giving stacked uppercase Vietnamese marks reliable
+  clearance in the real `manga2eng` renderer. `-0.05` was readable but left some marks
+  too close at full size, `-0.10` crowded them, and the proposed `-1` collapses successive
+  baselines completely. Values outside `-0.5..2.0` are rejected.
+- `uppercase: true` matches the main-dialogue target. The selected font was checked for
+  both uppercase and lowercase Vietnamese coverage before enabling it.
+- `disable_font_border: true` produces clean black text in white bubbles. Set it to
+  `false` for patterned or uncertain backgrounds that need a white contrast outline.
 
 Generate a local, network-free comparison of mixed case and uppercase lettering:
 
@@ -169,6 +180,21 @@ The report lists coverage, missing glyphs, monospace detection, and default suit
 for every font in `fonts/`. Add `--disable-font-border`, adjust `--font-size`, or adjust
 the core-style `--line-spacing` multiplier to compare another preview. The utility only
 uses Pillow/fontTools; it never invokes OCR, a crawler, MangaDex, or a translator API.
+
+Generate the all-font contact sheet used to select the preset:
+
+```bash
+python3 -m auto_manga.tools.font_preview \
+  --contact-sheet \
+  --output ./vietnamese-font-contact-sheet.png \
+  --report-fonts
+```
+
+Every row renders directly with that font, including visible missing-glyph boxes for
+incomplete candidates; samples never borrow characters from Arial or another fallback.
+The columns compare mixed case, uppercase, border on/off, and spacing multipliers
+`-1.00`, `-0.05`, and `+0.08`. The intentionally broken `-1.00` column documents why
+that proposed value is not used in production.
 
 Changing a font does not invalidate an already valid translated folder. `resume` will
 skip that output. To rerender one chapter safely, move its translated folder to a backup

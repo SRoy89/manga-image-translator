@@ -23,16 +23,16 @@ translation:
   target_language: "VIN"
 
   font_path: "./fonts/Arial-Unicode-Regular.ttf"
-  renderer: "default"
+  renderer: "manga2eng"
   alignment: "center"
   direction: "horizontal"
 
-  uppercase: false
-  font_size_offset: 2
-  font_size_minimum: 18
+  uppercase: true
+  font_size_offset: 1
+  font_size_minimum: 16
   no_hyphenation: true
-  line_spacing: -0.05
-  disable_font_border: false
+  line_spacing: 0.01
+  disable_font_border: true
 
 database:
   path: "./data/state.db"

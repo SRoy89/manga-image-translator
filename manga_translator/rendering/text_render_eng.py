@@ -83,7 +83,8 @@ def render_lines(
     line_box = add_color(canvas_text, fg, canvas_border, bg)
 
     # rect
-    x, y, width, height = cv2.boundingRect(canvas_border)
+    bounds_map = canvas_border if stroke_width > 0 else canvas_text
+    x, y, width, height = cv2.boundingRect(bounds_map)
     return Image.fromarray(line_box[y:y+height, x:x+width])
 
     # c = Image.new('RGBA', (canvas_w, canvas_h), color = (0, 0, 0, 0))
@@ -503,6 +504,8 @@ def render_textblock_list_eng(
             line.pos_y -= canvas_y1
 
         region_font_color, region_stroke_color = region.get_font_colors()
+        if disable_font_border:
+            region_stroke_color = None
 
         textlines_image = render_lines(textlines, canvas_h, canvas_w, font_size, sw, line_spacing, region_font_color, region_stroke_color)
         rel_cx = ((canvas_x1 + canvas_x2) / 2 - rx) / resize_ratio

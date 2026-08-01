@@ -15,7 +15,9 @@ from PIL import Image
 from auto_manga.config import ConfigError, TranslationConfig, load_config
 from auto_manga.font_support import inspect_font
 from auto_manga.pipeline.translator import MangaTranslator
-from auto_manga.tools.font_preview import render_preview
+from auto_manga.tools.font_preview import render_contact_sheet, render_preview
+from manga_translator.rendering import text_render
+from manga_translator.rendering.text_render_eng import Textline, render_lines
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -50,11 +52,15 @@ def write_config(root: Path, translation_lines: list[str]) -> Path:
 
 
 class RenderingConfigTest(unittest.TestCase):
-    def test_repository_defaults_preserve_mixed_case_and_use_tunable_renderer(self) -> None:
+    def test_repository_defaults_use_uppercase_manga_dialogue_preset(self) -> None:
         config = load_config(REPOSITORY_ROOT / "auto_manga" / "config.yaml")
-        self.assertEqual(config.translation.renderer, "default")
-        self.assertFalse(config.translation.uppercase)
+        self.assertEqual(config.translation.renderer, "manga2eng")
+        self.assertTrue(config.translation.uppercase)
         self.assertEqual(config.translation.font_path, COMPLETE_FONT)
+        self.assertEqual(config.translation.font_size_offset, 1)
+        self.assertEqual(config.translation.font_size_minimum, 16)
+        self.assertEqual(config.translation.line_spacing, 0.01)
+        self.assertTrue(config.translation.disable_font_border)
 
     def test_old_config_without_rendering_settings_still_loads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -253,6 +259,32 @@ class FontPreviewTest(unittest.TestCase):
                 self.assertEqual(image.format, "PNG")
                 self.assertEqual(image.size, (1440, 1160))
                 self.assertIsNotNone(image.getbbox())
+
+    def test_contact_sheet_compares_every_repository_font(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = render_contact_sheet(
+                REPOSITORY_ROOT / "fonts", Path(directory) / "contact-sheet.png"
+            )
+            with Image.open(output) as image:
+                self.assertEqual(image.format, "PNG")
+                self.assertEqual(image.size, (3190, 2815))
+                self.assertIsNotNone(image.getbbox())
+
+    def test_manga2eng_text_remains_visible_when_border_is_disabled(self) -> None:
+        text_render.set_font(str(COMPLETE_FONT))
+        text_render.get_char_glyph.cache_clear()
+        rendered = render_lines(
+            [Textline("ĐỐI VỚI EM", pos_x=0, pos_y=0, length=260)],
+            canvas_h=100,
+            canvas_w=400,
+            font_size=36,
+            stroke_width=0,
+            line_spacing=0.01,
+            fg=(0, 0, 0),
+            bg=None,
+        )
+        alpha = rendered.getchannel("A")
+        self.assertIsNotNone(alpha.getbbox())
 
 
 if __name__ == "__main__":
