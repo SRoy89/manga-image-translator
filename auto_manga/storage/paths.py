@@ -1,15 +1,22 @@
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
-from pathlib import Path
 import re
 import unicodedata
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 from auto_manga.crawler.models import Chapter, Manga
 
-
 _UNSAFE = re.compile(r"[<>:\"/\\|?*\x00-\x1f]")
 _WHITESPACE = re.compile(r"\s+")
+_WINDOWS_RESERVED = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
 
 
 def sanitize_name(value: str, fallback: str = "untitled", max_length: int = 100) -> str:
@@ -18,6 +25,8 @@ def sanitize_name(value: str, fallback: str = "untitled", max_length: int = 100)
     normalized = _WHITESPACE.sub(" ", normalized).strip(" .-")
     if normalized in {"", ".", ".."}:
         normalized = fallback
+    if normalized.split(".", maxsplit=1)[0].upper() in _WINDOWS_RESERVED:
+        normalized = f"_{normalized}"
     return normalized[:max_length].rstrip(" .") or fallback
 
 
@@ -26,7 +35,7 @@ def manga_slug(manga: Manga) -> str:
 
 
 def chapter_slug(chapter: Chapter) -> str:
-    number = chapter.number.strip()
+    number = (chapter.storage_key or chapter.number).strip()
     if len(number) > 32:
         return f"chapter-{sanitize_name(number, fallback=sanitize_name(chapter.id))}"
     try:

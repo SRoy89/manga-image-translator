@@ -1,17 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 import json
 import logging
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
+from pathlib import Path
 
 from auto_manga.config import TranslationConfig
-from auto_manga.crawler.downloader import chapter_images, is_valid_image
-
+from auto_manga.crawler.downloader import (
+    chapter_images,
+    is_valid_image,
+    validate_chapter_images,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -20,14 +23,17 @@ class TranslationError(RuntimeError):
     """Raised when manga-image-translator cannot translate a folder."""
 
 
-def validate_translated_output(input_path: Path, output_path: Path) -> bool:
+def validate_translated_output(
+    input_path: Path,
+    output_path: Path,
+    expected_count: int | None = None,
+) -> bool:
+    if input_path.resolve() == output_path.resolve():
+        return False
     input_images = chapter_images(input_path)
-    output_images = chapter_images(output_path)
-    if not input_images or len(output_images) != len(input_images):
+    if not validate_chapter_images(input_path, expected_count):
         return False
-    if [image.name for image in output_images] != [image.name for image in input_images]:
-        return False
-    return all(is_valid_image(image) for image in output_images)
+    return validate_chapter_images(output_path, len(input_images))
 
 
 class MangaTranslator:
@@ -46,6 +52,8 @@ class MangaTranslator:
     def translate_folder(self, input_path: Path, output_path: Path) -> None:
         if not input_path.is_dir():
             raise TranslationError(f"Input folder does not exist: {input_path}")
+        if input_path.resolve() == output_path.resolve():
+            raise TranslationError("Input and output folders must be different")
         output_path.mkdir(parents=True, exist_ok=True)
         self._remove_invalid_outputs(input_path, output_path)
 
@@ -92,6 +100,12 @@ class MangaTranslator:
             )
         if result.stderr:
             LOGGER.debug("Translator diagnostic output:\n%s", result.stderr.rstrip())
+        if not validate_translated_output(input_path, output_path):
+            detail = self._last_output_line(result.stderr or result.stdout)
+            suffix = f": {detail}" if detail else ""
+            raise TranslationError(
+                f"manga-image-translator produced incomplete output{suffix}"
+            )
 
     def _write_core_config(self, config: dict[str, object]) -> Path:
         descriptor, filename = tempfile.mkstemp(prefix="auto-manga-", suffix=".json")

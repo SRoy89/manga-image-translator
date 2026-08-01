@@ -1,26 +1,29 @@
 from __future__ import annotations
 
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import logging
-from pathlib import Path
 import re
 import shutil
 import threading
 import time
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from urllib.parse import urlparse
 
-from PIL import Image, UnidentifiedImageError
 import requests
+from PIL import Image, UnidentifiedImageError
 
 from auto_manga.config import DownloadConfig
 
 from .models import Page
 
-
 LOGGER = logging.getLogger(__name__)
 IMAGE_NAME = re.compile(r"^(\d{3,})\.jpg$")
+USER_AGENT = (
+    "auto-manga/0.1 "
+    "(+https://github.com/zyddnys/manga-image-translator)"
+)
 
 
 class DownloadError(RuntimeError):
@@ -28,9 +31,9 @@ class DownloadError(RuntimeError):
 
 
 def is_valid_image(path: Path) -> bool:
-    if not path.is_file() or path.stat().st_size == 0:
-        return False
     try:
+        if not path.is_file() or path.stat().st_size == 0:
+            return False
         with Image.open(path) as image:
             image.verify()
     except (OSError, UnidentifiedImageError):
@@ -39,9 +42,12 @@ def is_valid_image(path: Path) -> bool:
 
 
 def chapter_images(folder: Path) -> list[Path]:
-    if not folder.is_dir():
+    try:
+        if not folder.is_dir():
+            return []
+        images = [path for path in folder.iterdir() if IMAGE_NAME.match(path.name)]
+    except OSError:
         return []
-    images = [path for path in folder.iterdir() if IMAGE_NAME.match(path.name)]
     return sorted(images, key=lambda path: int(path.stem))
 
 
@@ -82,6 +88,8 @@ class ChapterDownloader:
     ) -> None:
         self.config = config
         self.session = session or requests.Session()
+        if session is None:
+            self.session.headers["User-Agent"] = USER_AGENT
         self._rate_limiter = _RateLimiter(config.delay)
 
     @staticmethod
@@ -101,6 +109,11 @@ class ChapterDownloader:
         ordered = self._ordered_pages(pages)
         destination.mkdir(parents=True, exist_ok=True)
         targets = [destination / f"{position:03d}.jpg" for position in range(1, len(ordered) + 1)]
+        expected_targets = set(targets)
+        for existing in chapter_images(destination):
+            if existing not in expected_targets:
+                LOGGER.warning("Removing stale chapter image %s", existing.name)
+                existing.unlink()
 
         first_by_url: dict[str, int] = {}
         duplicate_positions: dict[int, list[int]] = defaultdict(list)

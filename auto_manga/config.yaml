@@ -8,6 +8,16 @@ download:
   delay: 1.0
   concurrency: 3
 
+sources:
+  mangadex:
+    translated_languages:
+      - en
+      - ja
+      - ko
+      - zh
+      - zh-hk
+    data_saver: false
+
 translation:
   translator: "deepseek"
   target_language: "VIN"

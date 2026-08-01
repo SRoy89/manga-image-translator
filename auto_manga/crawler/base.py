@@ -5,6 +5,10 @@ from abc import ABC, abstractmethod
 from .models import Chapter, Manga, Page
 
 
+class SourceError(RuntimeError):
+    """Raised when source metadata cannot be loaded or parsed."""
+
+
 class MangaSource(ABC):
     """Interface implemented by every source-specific adapter."""
 

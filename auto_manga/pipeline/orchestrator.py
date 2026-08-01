@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-import logging
 
 from auto_manga.config import AppConfig
-from auto_manga.crawler.base import MangaSource
+from auto_manga.crawler.base import MangaSource, SourceError
 from auto_manga.crawler.downloader import ChapterDownloader, validate_chapter_images
 from auto_manga.crawler.models import Chapter, Manga, Page
 from auto_manga.crawler.sources.registry import SourceRegistry
@@ -13,7 +13,6 @@ from auto_manga.storage.database import ChapterRecord, Database
 from auto_manga.storage.paths import chapter_paths
 
 from .translator import MangaTranslator, validate_translated_output
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -39,7 +38,12 @@ class PipelineOrchestrator:
         self.database = database
         self.downloader = downloader or ChapterDownloader(config.download)
         self.translator = translator or MangaTranslator(config.translation)
-        self.sources = sources or SourceRegistry(timeout=config.download.timeout)
+        self.sources = sources or SourceRegistry(
+            timeout=config.download.timeout,
+            retries=config.download.retries,
+            delay=config.download.delay,
+            mangadex=config.sources.mangadex,
+        )
 
     def run_manga(
         self,
@@ -66,6 +70,7 @@ class PipelineOrchestrator:
         recovered = self.database.recover_interrupted()
         if recovered:
             LOGGER.info("Recovered %s interrupted chapter states", recovered)
+        self._recover_invalid_translated_records()
         records = self.database.list_resumable()
         LOGGER.info("Found %s chapters to resume", len(records))
 
@@ -75,7 +80,7 @@ class PipelineOrchestrator:
             LOGGER.info("[%s/%s] Chapter %s", position, len(records), record.chapter_number)
             try:
                 source = self.sources.get(record.source)
-            except Exception as exc:
+            except SourceError as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 self.database.set_status(record.id, "failed", error=error[:2000])
                 LOGGER.error("Chapter %s: %s", record.chapter_number, error)
@@ -113,7 +118,7 @@ class PipelineOrchestrator:
         failed = 0
         for position, record in enumerate(records, start=1):
             LOGGER.info("[%s/%s] Chapter %s", position, len(records), record.chapter_number)
-            if record.status == "translated":
+            if record.status == "translated" and self._translation_is_complete(record):
                 LOGGER.info("Already translated; skipping")
                 skipped += 1
             elif self._process_record(record, source):
@@ -123,7 +128,7 @@ class PipelineOrchestrator:
         return PipelineSummary(len(records), translated, skipped, failed)
 
     def _process_record(self, record: ChapterRecord, source: MangaSource) -> bool:
-        _manga, chapter = record.to_models()
+        chapter = record.to_chapter()
         pages: list[Page] | None = None
         expected_count = record.page_count
         try:
@@ -147,7 +152,9 @@ class PipelineOrchestrator:
             elif record.status != "downloaded":
                 self.database.set_status(record.id, "downloaded")
 
-            if validate_translated_output(record.raw_path, record.translated_path):
+            if validate_translated_output(
+                record.raw_path, record.translated_path, expected_count
+            ):
                 self.database.set_status(record.id, "translated")
                 LOGGER.info("[TRANSLATE] Existing output is complete")
                 return True
@@ -159,7 +166,9 @@ class PipelineOrchestrator:
                 self.config.translation.target_language,
             )
             self.translator.translate_folder(record.raw_path, record.translated_path)
-            if not validate_translated_output(record.raw_path, record.translated_path):
+            if not validate_translated_output(
+                record.raw_path, record.translated_path, expected_count
+            ):
                 raise RuntimeError("Translated output failed validation")
             self.database.set_status(record.id, "translated")
             LOGGER.info("[TRANSLATE] completed")
@@ -167,8 +176,37 @@ class PipelineOrchestrator:
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             self.database.set_status(record.id, "failed", error=error[:2000])
-            LOGGER.error("Chapter %s: %s", chapter.number, error)
+            LOGGER.error(
+                "Chapter %s: %s",
+                chapter.number,
+                error,
+                exc_info=LOGGER.isEnabledFor(logging.DEBUG),
+            )
             return False
+
+    def _recover_invalid_translated_records(self) -> None:
+        for record in self.database.list_translated():
+            if self._translation_is_complete(record):
+                continue
+            raw_complete = (
+                record.page_count is not None
+                and validate_chapter_images(record.raw_path, record.page_count)
+            )
+            recovered_status = "downloaded" if raw_complete else "pending"
+            self.database.set_status(record.id, recovered_status)
+            LOGGER.warning(
+                "Chapter %s was marked translated but its files are incomplete; reset to %s",
+                record.chapter_number,
+                recovered_status,
+            )
+
+    @staticmethod
+    def _translation_is_complete(record: ChapterRecord) -> bool:
+        return record.page_count is not None and validate_translated_output(
+            record.raw_path,
+            record.translated_path,
+            record.page_count,
+        )
 
     @staticmethod
     def _select_chapters(

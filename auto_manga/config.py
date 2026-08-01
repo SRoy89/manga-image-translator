@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -38,11 +39,23 @@ class DatabaseConfig:
 
 
 @dataclass(frozen=True)
+class MangaDexConfig:
+    translated_languages: tuple[str, ...] = ("en", "ja", "ko", "zh", "zh-hk")
+    data_saver: bool = False
+
+
+@dataclass(frozen=True)
+class SourcesConfig:
+    mangadex: MangaDexConfig = field(default_factory=MangaDexConfig)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     storage: StorageConfig
     download: DownloadConfig
     translation: TranslationConfig
     database: DatabaseConfig
+    sources: SourcesConfig = field(default_factory=SourcesConfig)
 
 
 def _required_mapping(data: dict[str, Any], key: str) -> dict[str, Any]:
@@ -50,6 +63,38 @@ def _required_mapping(data: dict[str, Any], key: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ConfigError(f"Config section '{key}' must be a mapping")
     return value
+
+
+def _optional_mapping(data: dict[str, Any], key: str) -> dict[str, Any]:
+    value = data.get(key, {})
+    if not isinstance(value, dict):
+        raise ConfigError(f"Config section '{key}' must be a mapping")
+    return value
+
+
+def _mangadex_config(data: dict[str, Any]) -> MangaDexConfig:
+    sources = _optional_mapping(data, "sources")
+    mangadex = _optional_mapping(sources, "mangadex")
+    raw_languages = mangadex.get(
+        "translated_languages", list(MangaDexConfig().translated_languages)
+    )
+    if not isinstance(raw_languages, list) or not raw_languages:
+        raise ConfigError("sources.mangadex.translated_languages must be a non-empty list")
+
+    languages: list[str] = []
+    for value in raw_languages:
+        if not isinstance(value, str):
+            raise ConfigError("MangaDex translated language codes must be strings")
+        language = value.strip().lower()
+        if not re.fullmatch(r"[a-z]{2,3}(?:-[a-z]{2})?", language):
+            raise ConfigError(f"Invalid MangaDex translated language code '{value}'")
+        if language not in languages:
+            languages.append(language)
+
+    data_saver = mangadex.get("data_saver", False)
+    if not isinstance(data_saver, bool):
+        raise ConfigError("sources.mangadex.data_saver must be true or false")
+    return MangaDexConfig(tuple(languages), data_saver)
 
 
 def _path(value: Any, name: str) -> Path:
@@ -104,11 +149,13 @@ def load_config(path: str | Path) -> AppConfig:
     if python_executable is not None:
         python_executable = str(python_executable).strip() or None
 
+    raw_path = _path(storage.get("raw"), "storage.raw")
+    translated_path = _path(storage.get("translated"), "storage.translated")
+    if raw_path == translated_path:
+        raise ConfigError("storage.raw and storage.translated must be different paths")
+
     return AppConfig(
-        storage=StorageConfig(
-            raw=_path(storage.get("raw"), "storage.raw"),
-            translated=_path(storage.get("translated"), "storage.translated"),
-        ),
+        storage=StorageConfig(raw=raw_path, translated=translated_path),
         download=download_config,
         translation=TranslationConfig(
             translator=translator,
@@ -116,4 +163,5 @@ def load_config(path: str | Path) -> AppConfig:
             python_executable=python_executable,
         ),
         database=DatabaseConfig(path=_path(database.get("path"), "database.path")),
+        sources=SourcesConfig(mangadex=_mangadex_config(data)),
     )

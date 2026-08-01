@@ -1,16 +1,13 @@
 from __future__ import annotations
 
+import re
 from typing import Any
-from urllib.parse import parse_qs, quote, unquote, urldefrag, urlparse
+from urllib.parse import parse_qs, quote, urldefrag, urlparse
 
 import requests
 
-from ..base import MangaSource
+from ..base import MangaSource, SourceError
 from ..models import Chapter, Manga, Page
-
-
-class SourceError(RuntimeError):
-    """Raised when source metadata cannot be loaded or parsed."""
 
 
 class ExampleSource(MangaSource):
@@ -29,7 +26,13 @@ class ExampleSource(MangaSource):
         self._pages: dict[str, list[Page]] = {}
 
     def can_handle(self, url: str) -> bool:
-        return urlparse(url).scheme.lower() in {"http", "https"}
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        return (
+            parsed.scheme.lower() in {"http", "https"}
+            and hostname != "mangadex.org"
+            and not hostname.endswith(".mangadex.org")
+        )
 
     def _load_document(self, url: str) -> dict[str, Any]:
         document_url, _ = urldefrag(url)
@@ -116,8 +119,16 @@ class ExampleSource(MangaSource):
                 page = Page(index=position, image_url=item)
             elif isinstance(item, dict):
                 try:
+                    raw_index = item.get("index", position)
+                    if isinstance(raw_index, bool):
+                        raise ValueError
+                    if isinstance(raw_index, str):
+                        if not re.fullmatch(r"[+-]?\d+", raw_index.strip()):
+                            raise ValueError
+                    elif not isinstance(raw_index, int):
+                        raise ValueError
                     page = Page(
-                        index=int(item.get("index", position)),
+                        index=int(raw_index),
                         image_url=self._required_text(item, "image_url", f"page {position}"),
                     )
                 except (TypeError, ValueError) as exc:
@@ -159,7 +170,7 @@ class ExampleSource(MangaSource):
         if not fragment:
             return None
         values = parse_qs(fragment).get("chapter")
-        return unquote(values[0]) if values else None
+        return values[0] if values else None
 
     def get_chapter(self, url: str) -> tuple[Manga, Chapter]:
         document_url, fragment = urldefrag(url)

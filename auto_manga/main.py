@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
+if __package__ in {None, ""}:
+    print(
+        "Run Auto Manga from the repository root: python3 main.py <command> ...",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
 from auto_manga.config import ConfigError, load_config
-from auto_manga.crawler.sources.example_source import SourceError
+from auto_manga.crawler.base import SourceError
 from auto_manga.pipeline.orchestrator import PipelineOrchestrator, PipelineSummary
 from auto_manga.storage.database import Database
-
 
 DEFAULT_CONFIG = Path(__file__).with_name("config.yaml")
 
@@ -20,14 +27,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", action="store_true", help="Show debug logging")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    manga = subparsers.add_parser("manga", help="Process chapters from a manga manifest URL")
+    manga = subparsers.add_parser("manga", help="Process chapters from a supported manga source")
     manga.add_argument("url")
     selection = manga.add_mutually_exclusive_group()
     selection.add_argument("--chapters", help="Chapter number or range, for example 1-30")
     selection.add_argument("--latest", action="store_true", help="Process the latest chapter")
     _add_common_options(manga)
 
-    chapter = subparsers.add_parser("chapter", help="Process one direct chapter manifest URL")
+    chapter = subparsers.add_parser("chapter", help="Process one chapter from a supported source")
     chapter.add_argument("url")
     _add_common_options(chapter)
 

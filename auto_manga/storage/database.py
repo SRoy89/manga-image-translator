@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-import sqlite3
 
 from auto_manga.crawler.models import Chapter, Manga
-
 
 CHAPTER_STATUSES = {
     "pending",
@@ -23,8 +22,6 @@ class ChapterRecord:
     manga_db_id: int
     source: str
     source_manga_id: str
-    manga_title: str
-    manga_source_url: str
     source_chapter_id: str
     chapter_number: str
     chapter_title: str
@@ -35,21 +32,14 @@ class ChapterRecord:
     error: str | None
     page_count: int | None
 
-    def to_models(self) -> tuple[Manga, Chapter]:
-        manga = Manga(
-            id=self.source_manga_id,
-            title=self.manga_title,
-            source_url=self.manga_source_url,
-            source=self.source,
-        )
-        chapter = Chapter(
+    def to_chapter(self) -> Chapter:
+        return Chapter(
             id=self.source_chapter_id,
             manga_id=self.source_manga_id,
             number=self.chapter_number,
             title=self.chapter_title,
             url=self.source_url,
         )
-        return manga, chapter
 
 
 class Database:
@@ -59,7 +49,11 @@ class Database:
         self.connection = sqlite3.connect(path)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
-        self._create_schema()
+        try:
+            self._create_schema()
+        except Exception:
+            self.connection.close()
+            raise
 
     def close(self) -> None:
         self.connection.close()
@@ -135,6 +129,17 @@ class Database:
         translated_path: Path,
     ) -> ChapterRecord:
         with self.connection:
+            collision = self.connection.execute(
+                """
+                SELECT id FROM chapters
+                WHERE (raw_path = ? OR translated_path = ?)
+                  AND NOT (manga_id = ? AND source_chapter_id = ?)
+                LIMIT 1
+                """,
+                (str(raw_path), str(translated_path), manga_db_id, chapter.id),
+            ).fetchone()
+            if collision is not None:
+                raise ValueError("Two chapters cannot share the same storage path")
             self.connection.execute(
                 """
                 INSERT INTO chapters(
@@ -220,12 +225,17 @@ class Database:
         ).fetchall()
         return [self._to_record(row) for row in rows]
 
+    def list_translated(self) -> list[ChapterRecord]:
+        rows = self.connection.execute(
+            self._record_query() + " WHERE c.status = 'translated' ORDER BY c.id"
+        ).fetchall()
+        return [self._to_record(row) for row in rows]
+
     @staticmethod
     def _record_query() -> str:
         return """
             SELECT
                 c.id, c.manga_id, m.source, m.source_manga_id,
-                m.title AS manga_title, m.source_url AS manga_source_url,
                 c.source_chapter_id, c.chapter_number,
                 c.title AS chapter_title, c.source_url,
                 c.raw_path, c.translated_path, c.status, c.error, c.page_count
@@ -240,8 +250,6 @@ class Database:
             manga_db_id=int(row["manga_id"]),
             source=str(row["source"]),
             source_manga_id=str(row["source_manga_id"]),
-            manga_title=str(row["manga_title"]),
-            manga_source_url=str(row["manga_source_url"]),
             source_chapter_id=str(row["source_chapter_id"]),
             chapter_number=str(row["chapter_number"]),
             chapter_title=str(row["chapter_title"]),

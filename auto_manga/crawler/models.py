@@ -18,6 +18,7 @@ class Chapter:
     number: str
     title: str
     url: str
+    storage_key: str | None = None
 
 
 @dataclass(frozen=True)
