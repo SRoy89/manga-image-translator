@@ -102,12 +102,12 @@ def general_parser(g_parser):
                         help='Disable automatic memory optimization during processing')
 
 
-def reparse(arr: list):
+def reparse(arr: list, namespace: argparse.Namespace = None):
     p = argparse.ArgumentParser(prog='manga_translator',
                                      description='Seamlessly translate mangas into a chosen language',
                                      formatter_class=HelpFormatter)
     general_parser(p)
-    return p.parse_args(arr)
+    return p.parse_args(arr, namespace=namespace)
 
 parser = argparse.ArgumentParser(prog='manga_translator', description='Seamlessly translate mangas into a chosen language', formatter_class=HelpFormatter)
 general_parser(parser)

@@ -23,6 +23,7 @@ from auto_manga.tools.font_preview import (
     render_font_comparison,
     render_preview,
 )
+from manga_translator.args import parser as core_parser, reparse
 from manga_translator.config import Config
 from manga_translator.manga_translator import MangaTranslator as CoreMangaTranslator
 from manga_translator.rendering import text_render
@@ -439,6 +440,21 @@ class TranslationUnicodeNormalizationTest(unittest.TestCase):
 
 
 class RenderingWrapperTest(unittest.TestCase):
+    def test_core_reparse_preserves_font_path_around_subcommand(self) -> None:
+        input_path = str(REPOSITORY_ROOT / "test" / "api_test.html")
+        font_path = str(MTO_FONT if MTO_FONT.is_file() else COMPLETE_FONT)
+        commands = (
+            ["--font-path", font_path, "local", "-i", input_path],
+            ["local", "-i", input_path, "--font-path", font_path],
+        )
+
+        for command in commands:
+            with self.subTest(command=command):
+                args, unknown = core_parser.parse_known_args(command)
+                args = reparse(unknown, args)
+                self.assertEqual(args.font_path, font_path)
+                self.assertEqual(args.mode, "local")
+
     def test_wrapper_passes_font_cli_argument_and_real_render_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
