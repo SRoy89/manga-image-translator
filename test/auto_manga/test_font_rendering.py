@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 import unittest
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from PIL import Image
 
@@ -20,6 +23,8 @@ from auto_manga.tools.font_preview import (
     render_font_comparison,
     render_preview,
 )
+from manga_translator.config import Config
+from manga_translator.manga_translator import MangaTranslator as CoreMangaTranslator
 from manga_translator.rendering import text_render
 from manga_translator.rendering.text_render_eng import Textline, render_lines
 
@@ -228,6 +233,209 @@ class FontCoverageTest(unittest.TestCase):
         self.assertIn("Ỵ", coverage.missing_glyphs)
         self.assertIn("ỵ", coverage.missing_glyphs)
         self.assertFalse(coverage.uppercase_complete)
+
+
+class TranslationUnicodeNormalizationTest(unittest.TestCase):
+    @staticmethod
+    def uppercase_config(**translator_overrides: object) -> Config:
+        translator = {
+            "translator": "deepseek",
+            "target_lang": "VIN",
+            "enable_post_translation_check": False,
+            **translator_overrides,
+        }
+        return Config(
+            translator=translator,
+            render={"uppercase": True},
+        )
+
+    @staticmethod
+    def bare_translator() -> CoreMangaTranslator:
+        translator = CoreMangaTranslator.__new__(CoreMangaTranslator)
+        translator.prep_manual = False
+        translator.load_text = False
+        translator.save_text = False
+        translator.post_dict = None
+        translator.use_mtpe = False
+        translator.ignore_errors = False
+        translator._gpu_limited_memory = False
+        translator.device = None
+        translator.context_size = 0
+        translator.batch_size = 1
+        translator.batch_concurrent = False
+        translator.all_page_translations = []
+        translator._original_page_texts = []
+        translator._model_usage_timestamps = {}
+        return translator
+
+    def test_normalize_translation_unicode_composes_vietnamese_nfd(self) -> None:
+        nfd_text = "U\u031b\u0300"
+        result = CoreMangaTranslator._normalize_translation_unicode(nfd_text)
+        self.assertEqual(result, "Ừ")
+        self.assertTrue(unicodedata.is_normalized("NFC", result))
+
+    def test_format_translation_uppercases_then_restores_nfc(self) -> None:
+        nfd_text = unicodedata.normalize("NFD", "ừ, đối với em")
+        result = CoreMangaTranslator._format_translation_text(
+            nfd_text, self.uppercase_config()
+        )
+        self.assertEqual(result, "Ừ, ĐỐI VỚI EM")
+        self.assertTrue(unicodedata.is_normalized("NFC", result))
+        self.assertFalse(any(unicodedata.combining(char) for char in result))
+
+    def test_run_text_translation_formats_mocked_nfd_result(self) -> None:
+        translator = self.bare_translator()
+        expected = "Ừ, ĐỐI VỚI EM"
+        nfd_text = unicodedata.normalize("NFD", expected.lower())
+        translator._dispatch_with_context = AsyncMock(return_value=[nfd_text])
+        region = SimpleNamespace(text="source", translation="")
+        ctx = SimpleNamespace(text_regions=[region])
+
+        result = asyncio.run(
+            translator._run_text_translation(self.uppercase_config(), ctx)
+        )
+
+        self.assertEqual(result[0].translation, expected)
+        self.assertTrue(unicodedata.is_normalized("NFC", result[0].translation))
+
+    def test_post_dictionary_normalizes_without_reapplying_uppercase(self) -> None:
+        translator = self.bare_translator()
+        translator._dispatch_with_context = AsyncMock(return_value=["token"])
+        region = SimpleNamespace(text="source", translation="")
+        ctx = SimpleNamespace(text_regions=[region])
+
+        with tempfile.TemporaryDirectory() as directory:
+            post_dict = Path(directory) / "post-dictionary.txt"
+            post_dict.write_text("TOKEN u\u031b\u0300\n", encoding="utf-8")
+            translator.post_dict = str(post_dict)
+            result = asyncio.run(
+                translator._run_text_translation(self.uppercase_config(), ctx)
+            )
+
+        self.assertEqual(result[0].translation, "ừ")
+        self.assertTrue(unicodedata.is_normalized("NFC", result[0].translation))
+
+    def test_batch_translation_formats_nfd_with_the_shared_helper(self) -> None:
+        translator = self.bare_translator()
+        nfd_text = unicodedata.normalize("NFD", "ừ, đối với em")
+        translator._batch_translate_texts = AsyncMock(return_value=[nfd_text])
+        translator._report_progress = AsyncMock()
+        region = SimpleNamespace(text="source", translation="")
+        ctx = SimpleNamespace(text_regions=[region])
+        translator._apply_post_translation_processing = AsyncMock(
+            return_value=[region]
+        )
+
+        asyncio.run(
+            translator._batch_translate_contexts(
+                [(ctx, self.uppercase_config())], batch_size=1
+            )
+        )
+
+        self.assertEqual(region.translation, "Ừ, ĐỐI VỚI EM")
+        self.assertTrue(unicodedata.is_normalized("NFC", region.translation))
+
+    def test_concurrent_translation_formats_nfd_with_the_shared_helper(self) -> None:
+        translator = self.bare_translator()
+        nfd_text = unicodedata.normalize("NFD", "ừ, đối với em")
+        translator._batch_translate_texts = AsyncMock(return_value=[nfd_text])
+        region = SimpleNamespace(text="source", translation="")
+        ctx = SimpleNamespace(text_regions=[region])
+        translator._apply_post_translation_processing = AsyncMock(
+            return_value=[region]
+        )
+
+        asyncio.run(
+            translator._concurrent_translate_contexts(
+                [(ctx, self.uppercase_config())]
+            )
+        )
+
+        self.assertEqual(region.translation, "Ừ, ĐỐI VỚI EM")
+        self.assertTrue(unicodedata.is_normalized("NFC", region.translation))
+
+    def test_shared_post_processing_normalizes_dictionary_output(self) -> None:
+        translator = self.bare_translator()
+        region = SimpleNamespace(text="source", translation="TOKEN")
+        ctx = SimpleNamespace(text_regions=[region])
+
+        with tempfile.TemporaryDirectory() as directory:
+            post_dict = Path(directory) / "post-dictionary.txt"
+            post_dict.write_text("TOKEN u\u031b\u0300\n", encoding="utf-8")
+            translator.post_dict = str(post_dict)
+            result = asyncio.run(
+                translator._apply_post_translation_processing(
+                    ctx, self.uppercase_config()
+                )
+            )
+
+        self.assertEqual(result[0].translation, "ừ")
+        self.assertTrue(unicodedata.is_normalized("NFC", result[0].translation))
+
+    def test_region_retry_formats_nfd_with_the_shared_helper(self) -> None:
+        translator = self.bare_translator()
+        translator._validate_translation = AsyncMock(side_effect=[False, True])
+        nfd_text = unicodedata.normalize("NFD", "ừ, đối với em")
+        region = SimpleNamespace(text="source", translation="invalid")
+        config = self.uppercase_config(post_check_max_retry_attempts=2)
+
+        with patch(
+            "manga_translator.translators.dispatch",
+            new=AsyncMock(return_value=[nfd_text]),
+        ):
+            result = asyncio.run(
+                translator._retry_translation_with_validation(region, config, object())
+            )
+
+        self.assertEqual(result, "Ừ, ĐỐI VỚI EM")
+        self.assertTrue(unicodedata.is_normalized("NFC", region.translation))
+
+    def test_rendering_entrypoint_defensively_normalizes_translation(self) -> None:
+        translator = self.bare_translator()
+        nfd_text = unicodedata.normalize("NFD", "Ừ, ĐỐI VỚI EM")
+        region = SimpleNamespace(translation=nfd_text)
+        image = object()
+        ctx = SimpleNamespace(text_regions=[region], img_inpainted=image)
+        config = Config(render={"renderer": "none"})
+
+        rendered = asyncio.run(translator._run_text_rendering(config, ctx))
+
+        self.assertIs(rendered, image)
+        self.assertEqual(region.translation, "Ừ, ĐỐI VỚI EM")
+        self.assertTrue(unicodedata.is_normalized("NFC", region.translation))
+
+    @unittest.skipUnless(MTO_FONT.is_file(), "local MTO Astro City font is not installed")
+    def test_pipeline_nfd_renders_like_nfc_with_only_mto_selected(self) -> None:
+        translator = self.bare_translator()
+        expected = "Ừ, ĐỐI VỚI EM"
+        nfd_text = unicodedata.normalize("NFD", expected)
+        region = SimpleNamespace(translation=nfd_text)
+        ctx = SimpleNamespace(text_regions=[region], img_inpainted=object())
+        asyncio.run(
+            translator._run_text_rendering(
+                Config(render={"renderer": "none"}), ctx
+            )
+        )
+
+        text_render.set_font(str(MTO_FONT))
+        self.assertEqual(len(text_render.FONT_SELECTION), 1)
+
+        def render(text: str) -> bytes:
+            image = render_lines(
+                [Textline(text, pos_x=0, pos_y=0, length=520)],
+                canvas_h=100,
+                canvas_w=560,
+                font_size=36,
+                stroke_width=0,
+                line_spacing=0.01,
+                fg=(0, 0, 0),
+                bg=None,
+            )
+            return image.tobytes()
+
+        expected_render = render(expected)
+        self.assertNotEqual(render(nfd_text), expected_render)
+        self.assertEqual(render(region.translation), expected_render)
 
 
 class RenderingWrapperTest(unittest.TestCase):

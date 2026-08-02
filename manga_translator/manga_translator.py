@@ -9,6 +9,7 @@ import torch
 import logging
 import sys
 import traceback
+import unicodedata
 import numpy as np
 from PIL import Image
 from typing import Optional, Any, List
@@ -102,6 +103,23 @@ class MangaTranslator:
     _progress_hooks: list[Any]
     result_sub_folder: str
     batch_size: int
+
+    @staticmethod
+    def _normalize_translation_unicode(text: str) -> str:
+        """Keep translated text in NFC so renderers receive composed glyphs."""
+        if not isinstance(text, str):
+            return ""
+        return unicodedata.normalize("NFC", text)
+
+    @classmethod
+    def _format_translation_text(cls, text: str, config: Config) -> str:
+        """Normalize new translator output and apply the configured letter case."""
+        text = cls._normalize_translation_unicode(text)
+        if config.render.uppercase:
+            text = text.upper()
+        elif config.render.lowercase:
+            text = text.lower()
+        return cls._normalize_translation_unicode(text)
 
     def __init__(self, params: dict = None):
         self.pre_dict = params.get('pre_dict', None)
@@ -1113,11 +1131,7 @@ class MangaTranslator:
         # If not none translator or none translator without prep_manual  
         if config.translator.translator != Translator.none or not self.prep_manual:  
             for region, translation in zip(ctx.text_regions, translated_sentences):  
-                if config.render.uppercase:  
-                    translation = translation.upper()  
-                elif config.render.lowercase:  
-                    translation = translation.lower()  # 修正：应该是lower而不是upper  
-                region.translation = translation  
+                region.translation = self._format_translation_text(translation, config)
                 region.target_lang = config.translator.target_lang  
                 region._alignment = config.render.alignment  
                 region._direction = config.render.direction  
@@ -1209,7 +1223,9 @@ class MangaTranslator:
         post_replacements = []  
         for region in ctx.text_regions:  
             original = region.translation  
-            region.translation = apply_dictionary(region.translation, post_dict)
+            region.translation = self._normalize_translation_unicode(
+                apply_dictionary(region.translation, post_dict)
+            )
             if original != region.translation:  
                 post_replacements.append(f"{original} => {region.translation}")  
 
@@ -1285,7 +1301,9 @@ class MangaTranslator:
                                 for i, region in enumerate(ctx.text_regions):
                                     if i < len(new_translations) and new_translations[i]:
                                         old_translation = region.translation
-                                        region.translation = new_translations[i]
+                                        region.translation = self._format_translation_text(
+                                            new_translations[i], config
+                                        )
                                         logger.debug(f"Region {i+1} translation updated: '{old_translation}' -> '{new_translations[i]}'")
                                     
                                 # 重新检查目标语言比例
@@ -1364,6 +1382,11 @@ class MangaTranslator:
                                          self.verbose)
 
     async def _run_text_rendering(self, config: Config, ctx: Context):
+        for region in ctx.text_regions or []:
+            region.translation = self._normalize_translation_unicode(
+                region.translation
+            )
+
         current_time = time.time()
         self._model_usage_timestamps[("rendering", config.render.renderer)] = current_time
         if config.render.renderer == Renderer.none:
@@ -1620,7 +1643,9 @@ class MangaTranslator:
                         
                         # 将翻译结果应用到各个region
                         for region, translation in zip(ctx.text_regions, translated_texts):
-                            region.translation = translation
+                            region.translation = self._format_translation_text(
+                                translation, config
+                            )
                             region.target_lang = config.translator.target_lang
                             region._alignment = config.render.alignment
                             region._direction = config.render.direction
@@ -1873,7 +1898,9 @@ class MangaTranslator:
                         continue
                     for region_idx, region in enumerate(ctx.text_regions):
                         if text_idx < len(translated_texts):
-                            region.translation = translated_texts[text_idx]
+                            region.translation = self._format_translation_text(
+                                translated_texts[text_idx], config
+                            )
                             region.target_lang = config.translator.target_lang
                             region._alignment = config.render.alignment
                             region._direction = config.render.direction
@@ -1935,7 +1962,10 @@ class MangaTranslator:
                                         for i, (ctx_idx, region) in enumerate(region_mapping):
                                             if i < len(new_translations) and new_translations[i]:
                                                 old_translation = region.translation
-                                                region.translation = new_translations[i]
+                                                retry_config = batch[ctx_idx][1]
+                                                region.translation = self._format_translation_text(
+                                                    new_translations[i], retry_config
+                                                )
                                                 logger.debug(f"Region {i+1} translation updated: '{old_translation}' -> '{new_translations[i]}'")
                                         
                                         # 重新收集所有regions并检查目标语言比例
@@ -2084,7 +2114,9 @@ class MangaTranslator:
                 # 将翻译结果分配回各个region
                 for i, region in enumerate(ctx.text_regions):
                     if i < len(translated_texts):
-                        region.translation = translated_texts[i]
+                        region.translation = self._format_translation_text(
+                            translated_texts[i], config
+                        )
                         region.target_lang = config.translator.target_lang
                         region._alignment = config.render.alignment
                         region._direction = config.render.direction
@@ -2123,7 +2155,9 @@ class MangaTranslator:
                                     for region in ctx.text_regions:
                                         if hasattr(region, 'text') and region.text and text_idx < len(new_translations):
                                             old_translation = region.translation
-                                            region.translation = new_translations[text_idx]
+                                            region.translation = self._format_translation_text(
+                                                new_translations[text_idx], config
+                                            )
                                             logger.debug(f"Region translation updated: '{old_translation}' -> '{new_translations[text_idx]}'")
                                             text_idx += 1
                                     
@@ -2458,7 +2492,9 @@ class MangaTranslator:
         post_replacements = []  
         for region in ctx.text_regions:  
             original = region.translation  
-            region.translation = apply_dictionary(region.translation, post_dict)
+            region.translation = self._normalize_translation_unicode(
+                apply_dictionary(region.translation, post_dict)
+            )
             if original != region.translation:  
                 post_replacements.append(f"{original} => {region.translation}")  
 
@@ -2494,7 +2530,9 @@ class MangaTranslator:
                         new_translation = await self._retry_translation_with_validation(region, config, ctx)
                         if new_translation:
                             old_translation = region.translation
-                            region.translation = new_translation
+                            region.translation = self._format_translation_text(
+                                new_translation, config
+                            )
                             logger.info(f"Region retry successful: '{old_translation}' -> '{new_translation}'")
                         else:
                             logger.warning(f"Region retry failed, keeping original: '{region.translation}'")
@@ -2756,7 +2794,10 @@ class MangaTranslator:
         带验证的重试翻译
         Retry translation with validation
         """
-        original_translation = region.translation
+        original_translation = self._format_translation_text(
+            region.translation, config
+        )
+        region.translation = original_translation
         max_attempts = config.translator.post_check_max_retry_attempts
         
         for attempt in range(max_attempts):
@@ -2793,13 +2834,9 @@ class MangaTranslator:
                             'cpu' if self._gpu_limited_memory else self.device
                         )
                         if retranslated:
-                            region.translation = retranslated[0]
-                            
-                            # 应用格式化处理
-                            if config.render.uppercase:
-                                region.translation = region.translation.upper()
-                            elif config.render.lowercase:
-                                region.translation = region.translation.lower()
+                            region.translation = self._format_translation_text(
+                                retranslated[0], config
+                            )
                                 
                             logger.info(f'Re-translation finished: "{region.text}" -> "{region.translation}"')
                         else:
@@ -2818,4 +2855,4 @@ class MangaTranslator:
                 logger.warning(f'Post-translation check failed, maximum retry attempts ({max_attempts}) reached, keeping original translation: "{original_translation}"')
                 region.translation = original_translation
         
-        return region.translation
+        return self._normalize_translation_unicode(region.translation)
