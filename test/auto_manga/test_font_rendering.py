@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unicodedata
 import unittest
@@ -440,6 +441,18 @@ class TranslationUnicodeNormalizationTest(unittest.TestCase):
 
 
 class RenderingWrapperTest(unittest.TestCase):
+    def test_core_module_entrypoint_loads(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "manga_translator", "--help"],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--font-path", result.stdout)
+
     def test_core_reparse_preserves_font_path_around_subcommand(self) -> None:
         input_path = str(REPOSITORY_ROOT / "test" / "api_test.html")
         font_path = str(MTO_FONT if MTO_FONT.is_file() else COMPLETE_FONT)

@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import logging
+from argparse import Namespace
 
 from manga_translator import Config
 from manga_translator.args import parser, reparse
