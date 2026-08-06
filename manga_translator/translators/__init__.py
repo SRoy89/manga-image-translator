@@ -5,6 +5,7 @@ import py3langid as langid
 from .common import *
 from .baidu import BaiduTranslator
 from .deepseek import DeepseekTranslator
+from .gemini_context import DeepseekGeminiContextTranslator
 # from .google import GoogleTranslator
 from .youdao import YoudaoTranslator
 from .deepl import DeeplTranslator
@@ -49,6 +50,7 @@ GPT_TRANSLATORS = {
     Translator.chatgpt: OpenAITranslator,
     Translator.chatgpt_2stage: ChatGPT2StageTranslator,
     Translator.deepseek: DeepseekTranslator,
+    Translator.deepseek_gemini_context: DeepseekGeminiContextTranslator,
     Translator.groq:GroqTranslator,
     Translator.custom_openai: CustomOpenAiTranslator,
     Translator.gemini: GeminiTranslator,

@@ -61,6 +61,15 @@ class MangaTranslator:
             "translator": {
                 "translator": self.config.translator,
                 "target_lang": self.config.target_language,
+                "gpt_config": str(self.config.gpt_config)
+                if self.config.gpt_config
+                else None,
+                "dialogue_style_guide": str(self.config.dialogue_style_guide)
+                if self.config.dialogue_style_guide
+                else None,
+                "dialogue_consistency_validator": (
+                    self.config.dialogue_consistency_validator
+                ),
             },
             "render": {
                 "renderer": self.config.renderer,
@@ -74,6 +83,30 @@ class MangaTranslator:
                 "disable_font_border": self.config.disable_font_border,
             },
         }
+        if self.config.translator == "deepseek_gemini_context":
+            core_config["translator"]["pronoun_context"] = {
+                "enabled": self.config.pronoun_context.enabled,
+                "provider": self.config.pronoun_context.provider,
+                "confidence_threshold": (
+                    self.config.pronoun_context.confidence_threshold
+                ),
+                "one_vision_call_per_page": (
+                    self.config.pronoun_context.one_vision_call_per_page
+                ),
+                "max_fallback_rounds": (
+                    self.config.pronoun_context.max_fallback_rounds
+                ),
+                "previous_pages": self.config.pronoun_context.previous_pages,
+                "cache_enabled": self.config.pronoun_context.cache_enabled,
+                "use_proper_names_when_natural": (
+                    self.config.pronoun_context.use_proper_names_when_natural
+                ),
+                "neutral_on_unresolved": (
+                    self.config.pronoun_context.neutral_on_unresolved
+                ),
+                "model": self.config.pronoun_context.model,
+                "timeout": self.config.pronoun_context.timeout,
+            }
         config_path = self._write_core_config(core_config)
         command = [
             self.config.python_executable or sys.executable,
@@ -82,6 +115,14 @@ class MangaTranslator:
         ]
         if self.config.font_path is not None:
             command.extend(["--font-path", str(self.config.font_path)])
+        if self.config.dialogue_consistency:
+            command.extend(
+                [
+                    "--dialogue-consistency",
+                    "--context-size",
+                    str(self.config.context_pages),
+                ]
+            )
         command.extend(
             [
                 "local",

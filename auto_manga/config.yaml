@@ -19,8 +19,23 @@ sources:
     data_saver: false
 
 translation:
-  translator: "deepseek"
+  translator: "deepseek_gemini_context"
   target_language: "VIN"
+  gpt_config: "./auto_manga/prompts/deepseek_vi.yaml"
+  context_pages: 4
+  dialogue_consistency: true
+  dialogue_consistency_validator: true
+  dialogue_style_guide: "./auto_manga/prompts/tozaki_vi_style.yaml"
+  pronoun_context:
+    enabled: true
+    provider: "gemini"
+    confidence_threshold: 0.72
+    one_vision_call_per_page: true
+    max_fallback_rounds: 1
+    previous_pages: 1
+    cache_enabled: true
+    use_proper_names_when_natural: true
+    neutral_on_unresolved: true
 
   font_path: "./fonts/MTO-Astro-City.ttf"
   renderer: "manga2eng"

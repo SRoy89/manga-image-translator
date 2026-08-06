@@ -119,6 +119,7 @@ class Translator(str, Enum):
     original = "original"
     sakura = "sakura"
     deepseek = "deepseek"
+    deepseek_gemini_context = "deepseek_gemini_context"
     groq = "groq"
     gemini = "gemini"
     gemini_2stage = "gemini_2stage"
@@ -216,6 +217,22 @@ class UpscaleConfig(BaseModel):
     upscale_ratio: Optional[int] = None
     """Image upscale ratio applied before detection. Can improve text detection."""
 
+
+class PronounContextConfig(BaseModel):
+    """Conditional visual context used only by deepseek_gemini_context."""
+
+    enabled: bool = True
+    provider: Literal["gemini"] = "gemini"
+    confidence_threshold: float = Field(default=0.72, ge=0.0, le=1.0)
+    one_vision_call_per_page: bool = True
+    max_fallback_rounds: Literal[0, 1] = 1
+    previous_pages: int = Field(default=1, ge=0, le=1)
+    cache_enabled: bool = True
+    use_proper_names_when_natural: bool = True
+    neutral_on_unresolved: bool = True
+    model: Optional[str] = None
+    timeout: float = Field(default=40.0, gt=0.0, le=300.0)
+
 class TranslatorConfig(BaseModel):
     translator: Translator = Translator.sugoi
     """Language translator to use"""
@@ -227,6 +244,12 @@ class TranslatorConfig(BaseModel):
     """Skip translation if source image is one of the provide languages, use comma to separate multiple languages. Example: JPN,ENG"""
     gpt_config: Optional[str] = None  # todo: no more path
     """Path to GPT config file, more info in README"""
+    dialogue_style_guide: Optional[str] = None
+    """Path to a validated per-manga Vietnamese dialogue style guide."""
+    dialogue_consistency_validator: bool = False
+    """Ask the GPT translator to validate dialogue consistency once per page."""
+    pronoun_context: PronounContextConfig = Field(default_factory=PronounContextConfig)
+    """Settings for one conditional Gemini Vision context pass per page."""
     translator_chain: Optional[str] = None
     """Output of one translator goes in another. Example: --translator-chain "google:JPN;sugoi:ENG"."""
     selective_translation: Optional[str] = None

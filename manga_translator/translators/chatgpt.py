@@ -78,11 +78,15 @@ class OpenAITranslator(ConfigGPT, CommonTranslator):
         else:
             self.console = Console()  
         self.prev_context = ""
+        self.dialogue_style_guide = ""
         # 可选的回退模型（通过环境变量 OPENAI_FALLBACK_MODEL 指定）
         self._fallback_model = os.getenv("OPENAI_FALLBACK_MODEL")
 
     def set_prev_context(self, text: str = ""):
-        self.prev_context = text or ""     
+        self.prev_context = (text or "").strip()
+
+    def set_dialogue_style_guide(self, style_guide: str | None) -> None:
+        self.dialogue_style_guide = (style_guide or "").strip()
 
     def parse_args(self, args: CommonTranslator):
         """如果你有外部参数要解析，可在此对 self.config 做更新"""
@@ -686,6 +690,15 @@ class OpenAITranslator(ConfigGPT, CommonTranslator):
         # 如果有上文，添加到系统消息中 / If there is a previous context, add it to the system message        
         if self.prev_context:
             messages.append({'role': 'system', 'content': self.prev_context})            
+        if self.dialogue_style_guide:
+            messages.append({
+                'role': 'system',
+                'content': (
+                    '<MANUAL_DIALOGUE_STYLE_GUIDE_DO_NOT_TRANSLATE>\n'
+                    + self.dialogue_style_guide
+                    + '\n</MANUAL_DIALOGUE_STYLE_GUIDE_DO_NOT_TRANSLATE>'
+                ),
+            })
         
         # 如果需要先给出示例对话
         # Add chat samples if available

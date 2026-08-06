@@ -86,8 +86,23 @@ dialogue with the core's bubble-aware renderer:
 
 ```yaml
 translation:
-  translator: "deepseek"
+  translator: "deepseek_gemini_context"
   target_language: "VIN"
+  gpt_config: "./auto_manga/prompts/deepseek_vi.yaml"
+  context_pages: 4
+  dialogue_consistency: true
+  dialogue_consistency_validator: false # optional; costs one extra validation call per page
+  dialogue_style_guide: "./auto_manga/prompts/tozaki_vi_style.yaml" # optional
+  pronoun_context:
+    enabled: true
+    provider: "gemini"
+    confidence_threshold: 0.72
+    one_vision_call_per_page: true
+    max_fallback_rounds: 1
+    previous_pages: 1
+    cache_enabled: true
+    use_proper_names_when_natural: true
+    neutral_on_unresolved: true
 
   font_path: "./fonts/MTO-Astro-City.ttf"
   renderer: "manga2eng"
@@ -102,11 +117,73 @@ translation:
   disable_font_border: true
 ```
 
-Relative font and storage paths follow the existing project convention: they resolve
-from the current working directory. Run the commands from the repository root, where
-`./fonts/...` is predictable. The wrapper passes `font_path` to the core as the global
+Relative config paths resolve from the repository project root, independent of the
+caller's current working directory. The wrapper passes `font_path` to the core as the global
 `--font-path` CLI argument and writes the remaining values to the core JSON `render`
 section. It uses a subprocess argument list and never invokes a shell.
+
+## Vietnamese dialogue consistency
+
+`dialogue_consistency: true` makes the translation step run page by page in chapter
+reading order. After page 1 finishes, its aligned source and Vietnamese lines become
+reference data for page 2. OCR and image processing remain separate from this rule; page
+translation itself is never launched concurrently while it depends on freshly translated
+history. `context_pages` accepts `0..20` and limits the non-empty prior pages carried into
+each request. `dialogue_consistency_validator` optionally asks DeepSeek for a strict JSON
+consistency check and retranslates only flagged current IDs, at most once per page. It never
+rewrites pronouns with regular expressions.
+Set `dialogue_consistency: false` to keep the legacy scheduling and omit the context CLI
+arguments.
+
+`deepseek_gemini_context` keeps DeepSeek as the primary translator. A separate DeepSeek
+classifier marks only speaker/addressee or Vietnamese address-form uncertainty. Gemini
+then receives the in-memory page image and every OCR ID/bounding box in one request, only
+when at least one region is marked. DeepSeek revises only those IDs. A missing Gemini key,
+timeout, API error, or invalid JSON logs a warning and preserves the first-pass DeepSeek
+translation. Setting `pronoun_context.enabled: false` uses the existing DeepSeek path.
+`GEMINI_VISION_MODEL` overrides the vision model and falls back to `GEMINI_MODEL`.
+
+The included `auto_manga/prompts/deepseek_vi.yaml` uses low-temperature DeepSeek settings
+and a final-answer-only Vietnamese manga prompt. A per-series style guide is optional:
+
+```yaml
+default:
+  peer_pair:
+    first_person: "tớ"
+    second_person: "cậu"
+  unknown_strategy: "omit_pronoun_when_natural"
+  narration_first_person: "tôi"
+
+characters:
+  - name: "Character A"
+    aliases: ["A-san"]
+    voice: "học sinh, điềm tĩnh"
+    self_pronoun: "tớ"
+
+relationships:
+  - speaker: "Character A"
+    listener: "Character B"
+    self: "anh"
+    address: "em"
+  - speaker: "Character B"
+    listener: "Character A"
+    self: "em"
+    address: "anh"
+
+terminology:
+  先輩: "tiền bối"
+```
+
+Relationship entries are directional. The prompt priority is manual style guide, then
+established bilingual page history, then clear evidence in current source, then the
+default policy. The guide is validated as UTF-8 YAML, capped at 64 KiB, loaded once per
+chapter, and placed outside `<CURRENT_TEXT>` so it cannot change the `<|id|>` count.
+
+Completed pages are persisted in `<translated-chapter>/.translation-context.json` with
+their source-image SHA-256. Writes use a temporary file plus atomic replace. Resume only
+reuses entries whose page name, translator, target language, line alignment, and current
+source hash still match; a corrupt sidecar produces a warning and is rebuilt without
+touching raw images or storing API credentials.
 
 The exact file found locally is `fonts/MTO-Astro-City.ttf`; the family metadata says
 `MTO Astro City Regular`. The binary is intentionally ignored by Git. Its metadata only

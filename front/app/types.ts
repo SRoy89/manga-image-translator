@@ -45,6 +45,7 @@ export type TranslatorKey =
   | "offline"  
   | "openai"  
   | "deepseek"  
+  | "deepseek_gemini_context"
   | "groq"  
   | "gemini"  
   | "custom_openai"  
@@ -70,6 +71,7 @@ export const validTranslators: TranslatorKey[] = [
   "offline",  
   "openai",  
   "deepseek",  
+  "deepseek_gemini_context",
   "groq",  
   "gemini",  
   "custom_openai",  

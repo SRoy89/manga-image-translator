@@ -1,0 +1,38 @@
+default:
+  peer_pair:
+    first_person: "tớ"
+    second_person: "cậu"
+  unknown_strategy: "omit_pronoun_when_natural"
+  narration_first_person: "tôi"
+  inner_monologue_first_person: "mình"
+  narration_guidance: "Các câu trần thuật liên tiếp giới thiệu Mei, miêu tả cô ấy ở ngôi ba và kể lại việc Shuu phải lòng cô ấy là lời kể, phải dùng tôi. self_pronoun của nhân vật chỉ áp dụng cho lời thoại trực tiếp có người nghe."
+
+characters:
+  - name: "Shuu"
+    aliases: ["Shu"]
+    voice: "nam sinh; hội thoại với bạn cùng lớp dùng tớ/cậu; lời kể dùng tôi; độc thoại nội tâm dùng mình"
+    self_pronoun: "tớ"
+    third_person: "cậu ấy"
+
+  - name: "Mei Tozaki"
+    aliases: ["Mei", "Tozaki", "Tozaki-san"]
+    voice: "nữ sinh; ít lời với Shuu; không tự ý đổi sang tôi/anh"
+    self_pronoun: "tớ"
+    third_person: "cô ấy"
+
+relationships:
+  - speaker: "Shuu"
+    listener: "Mei Tozaki"
+    self: "tớ"
+    address: "cậu"
+
+  - speaker: "Mei Tozaki"
+    listener: "Shuu"
+    self: "tớ"
+    address: "cậu"
+terminology:
+  メイド: "hầu gái"
+
+line_guidance:
+  "IS IT OKAY TO SIT NEXT TO HER?": "Độc thoại nội tâm của Shuu; lược chủ ngữ nếu tự nhiên, nếu cần ngôi thứ nhất thì dùng mình; Mei là cô ấy."
+  "AHH- AS USUAL, SHE WONT EVEN LOOK AT ME...": "Độc thoại nội tâm của Shuu; phải dùng mình, không dùng tớ/tôi; Mei là cô ấy."

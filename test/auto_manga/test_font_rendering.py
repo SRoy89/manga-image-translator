@@ -523,7 +523,12 @@ class RenderingWrapperTest(unittest.TestCase):
             self.assertEqual(
                 generated_config,
                 {
-                    "translator": {"translator": "deepseek", "target_lang": "VIN"},
+                    "translator": {
+                        "translator": "deepseek",
+                        "target_lang": "VIN",
+                        "gpt_config": None,
+                        "dialogue_style_guide": None,
+                    },
                     "render": {
                         "renderer": "manga2eng",
                         "alignment": "center",

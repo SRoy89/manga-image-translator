@@ -94,6 +94,11 @@ def general_parser(g_parser):
     g_parser.add_argument('--kernel-size', default=3, type=int,
                         help='Set the convolution kernel size of the text erasure area to completely clean up text residues')
     g_parser.add_argument('--context-size', default=0, type=int, help='Pages of context are needed for translating the current page')
+    g_parser.add_argument(
+        '--dialogue-consistency',
+        action='store_true',
+        help='Translate chapter pages sequentially and persist bilingual dialogue context.',
+    )
     g_parser.add_argument('--batch-size', default=1, type=int,
                         help='Number of images to process in each batch for translation. Default is 1 (no batching)')
     g_parser.add_argument('--batch-concurrent', action='store_true',

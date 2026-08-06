@@ -45,6 +45,11 @@ class CommonGPTTranslator(ConfigGPT, CommonTranslator):
 
         ConfigGPT.__init__(self, config_key=config_key)
         CommonTranslator.__init__(self)
+        # Request-scoped dialogue data.  These must stay on the instance: a single
+        # process may translate more than one chapter.
+        self.prev_context = ""
+        self.dialogue_style_guide = ""
+        self.dialogue_consistency_validator = False
         
         # `_MAX_TOKENS` indicates the maximum output tokens.
         #   Unless specified otherwise: 
@@ -56,6 +61,17 @@ class CommonGPTTranslator(ConfigGPT, CommonTranslator):
 
     def parse_args(self, args: CommonTranslator):
         self.config = args.chatgpt_config
+        self.dialogue_consistency_validator = bool(
+            getattr(args, "dialogue_consistency_validator", False)
+        )
+
+    def set_prev_context(self, context: str | None) -> None:
+        """Set bilingual page history used as reference, never as input lines."""
+        self.prev_context = (context or "").strip()
+
+    def set_dialogue_style_guide(self, style_guide: str | None) -> None:
+        """Set a validated, chapter-specific dialogue style guide."""
+        self.dialogue_style_guide = (style_guide or "").strip()
 
     @abstractmethod
     def count_tokens(self, text: str) -> int:

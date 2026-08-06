@@ -431,7 +431,13 @@ class TranslatorWrapperTest(unittest.TestCase):
             self.assertEqual(
                 observed["config"],
                 {
-                    "translator": {"translator": "deepseek", "target_lang": "VIN"},
+                    "translator": {
+                        "translator": "deepseek",
+                        "target_lang": "VIN",
+                        "gpt_config": None,
+                        "dialogue_style_guide": None,
+                        "dialogue_consistency_validator": False,
+                    },
                     "render": {
                         "renderer": "default",
                         "alignment": "auto",
@@ -445,7 +451,40 @@ class TranslatorWrapperTest(unittest.TestCase):
                     },
                 },
             )
+            self.assertIn("--dialogue-consistency", command)
+            context_index = command.index("--context-size")
+            self.assertEqual(command[context_index + 1], "4")
             self.assertTrue(validate_translated_output(input_path, output_path))
+
+    def test_dialogue_consistency_false_keeps_legacy_cli_scheduling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_path = root / "raw"
+            output_path = root / "translated"
+            input_path.mkdir()
+            (input_path / "001.jpg").write_bytes(jpeg_bytes())
+            observed: list[str] = []
+
+            def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                observed.extend(command)
+                output_path.mkdir(exist_ok=True)
+                shutil.copyfile(input_path / "001.jpg", output_path / "001.jpg")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            wrapper = MangaTranslator(
+                TranslationConfig(
+                    translator="deepseek",
+                    target_language="VIN",
+                    context_pages=4,
+                    dialogue_consistency=False,
+                ),
+                runner=runner,
+                project_root=root,
+            )
+            wrapper.translate_folder(input_path, output_path)
+
+            self.assertNotIn("--dialogue-consistency", observed)
+            self.assertNotIn("--context-size", observed)
 
     def test_nonzero_exit_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -838,6 +877,94 @@ class PipelineTest(unittest.TestCase):
 
 
 class ConfigTest(unittest.TestCase):
+    @staticmethod
+    def _write_config(root: Path, translation_lines: list[str]) -> Path:
+        config_path = root / "config.yaml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "storage:",
+                    f"  raw: '{root / 'raw'}'",
+                    f"  translated: '{root / 'translated'}'",
+                    "download: {}",
+                    "translation:",
+                    *(f"  {line}" for line in translation_lines),
+                    "database:",
+                    f"  path: '{root / 'state.db'}'",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return config_path
+
+    def test_gpt_config_and_style_guide_are_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gpt_config = root / "deepseek.yaml"
+            style = root / "style.yaml"
+            gpt_config.write_text("deepseek:\n  temperature: 0.1\n", encoding="utf-8")
+            style.write_text(
+                "relationships:\n"
+                "  - speaker: A\n"
+                "    listener: B\n"
+                "    self: anh\n"
+                "    address: em\n"
+                "line_guidance:\n"
+                "  'What did I do?': 'inner monologue; use mình'\n",
+                encoding="utf-8",
+            )
+            config = load_config(
+                self._write_config(
+                    root,
+                    [
+                        f"gpt_config: '{gpt_config}'",
+                        f"dialogue_style_guide: '{style}'",
+                        "context_pages: 20",
+                        "dialogue_consistency: true",
+                        "dialogue_consistency_validator: true",
+                    ],
+                )
+            )
+
+            self.assertEqual(config.translation.gpt_config, gpt_config)
+            self.assertEqual(config.translation.dialogue_style_guide, style)
+            self.assertEqual(config.translation.context_pages, 20)
+            self.assertTrue(config.translation.dialogue_consistency_validator)
+
+    def test_missing_gpt_or_style_file_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(ConfigError, "gpt_config does not exist"):
+                load_config(
+                    self._write_config(
+                        root, [f"gpt_config: '{root / 'missing.yaml'}'"]
+                    )
+                )
+
+    def test_negative_context_pages_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(ConfigError, "context_pages must be between"):
+                load_config(self._write_config(root, ["context_pages: -1"]))
+
+    def test_unknown_translation_key_is_still_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(ConfigError, "Unsupported translation setting"):
+                load_config(self._write_config(root, ["context_pagez: 4"]))
+
+    def test_invalid_style_guide_schema_has_clear_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            style = root / "style.yaml"
+            style.write_text("relationships: wrong\n", encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "relationships must be a list"):
+                load_config(
+                    self._write_config(
+                        root, [f"dialogue_style_guide: '{style}'"]
+                    )
+                )
+
     def test_raw_and_translated_roots_must_be_different(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
