@@ -94,6 +94,11 @@ def general_parser(g_parser):
     g_parser.add_argument('--kernel-size', default=3, type=int,
                         help='Set the convolution kernel size of the text erasure area to completely clean up text residues')
     g_parser.add_argument('--context-size', default=0, type=int, help='Pages of context are needed for translating the current page')
+    g_parser.add_argument(
+        '--dialogue-consistency',
+        action='store_true',
+        help='Translate chapter pages sequentially and persist bilingual dialogue context.',
+    )
     g_parser.add_argument('--batch-size', default=1, type=int,
                         help='Number of images to process in each batch for translation. Default is 1 (no batching)')
     g_parser.add_argument('--batch-concurrent', action='store_true',
@@ -102,12 +107,12 @@ def general_parser(g_parser):
                         help='Disable automatic memory optimization during processing')
 
 
-def reparse(arr: list):
+def reparse(arr: list, namespace: argparse.Namespace = None):
     p = argparse.ArgumentParser(prog='manga_translator',
                                      description='Seamlessly translate mangas into a chosen language',
                                      formatter_class=HelpFormatter)
     general_parser(p)
-    return p.parse_args(arr)
+    return p.parse_args(arr, namespace=namespace)
 
 parser = argparse.ArgumentParser(prog='manga_translator', description='Seamlessly translate mangas into a chosen language', formatter_class=HelpFormatter)
 general_parser(parser)

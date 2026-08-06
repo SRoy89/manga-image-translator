@@ -1,5 +1,6 @@
 import asyncio
 import cv2
+import hashlib
 import json
 import langcodes
 import os
@@ -8,7 +9,9 @@ import time
 import torch
 import logging
 import sys
+import tempfile
 import traceback
+import unicodedata
 import numpy as np
 from PIL import Image
 from typing import Optional, Any, List
@@ -39,11 +42,20 @@ from .translators import (
     unload as unload_translation,
 )
 from .translators.common import ISO_639_1_TO_VALID_LANGUAGES
+from .translators.gemini_context import RelationshipMemory
+from .dialogue import PageTranslationContext, load_style_guide
 from .colorization import dispatch as dispatch_colorization, prepare as prepare_colorization, unload as unload_colorization
 from .rendering import dispatch as dispatch_rendering, dispatch_eng_render, dispatch_eng_render_pillow
 
 # Will be overwritten by __main__.py if module is being run directly (with python -m)
 logger = logging.getLogger('manga_translator')
+
+_CONTEXT_AWARE_TRANSLATORS = {
+    Translator.chatgpt,
+    Translator.chatgpt_2stage,
+    Translator.deepseek,
+    Translator.deepseek_gemini_context,
+}
 
 # 全局console实例，用于日志重定向
 _global_console = None
@@ -103,7 +115,25 @@ class MangaTranslator:
     result_sub_folder: str
     batch_size: int
 
+    @staticmethod
+    def _normalize_translation_unicode(text: str) -> str:
+        """Keep translated text in NFC so renderers receive composed glyphs."""
+        if not isinstance(text, str):
+            return ""
+        return unicodedata.normalize("NFC", text)
+
+    @classmethod
+    def _format_translation_text(cls, text: str, config: Config) -> str:
+        """Normalize new translator output and apply the configured letter case."""
+        text = cls._normalize_translation_unicode(text)
+        if config.render.uppercase:
+            text = text.upper()
+        elif config.render.lowercase:
+            text = text.lower()
+        return cls._normalize_translation_unicode(text)
+
     def __init__(self, params: dict = None):
+        params = params or {}
         self.pre_dict = params.get('pre_dict', None)
         self.post_dict = params.get('post_dict', None)
         self.font_path = None
@@ -119,13 +149,12 @@ class MangaTranslator:
         self._progress_hooks = []
         self._add_logger_hook()
 
-        params = params or {}
-        
         self._batch_contexts = []  # 存储批量处理的上下文
         self._batch_configs = []   # 存储批量处理的配置
         self.disable_memory_optimization = params.get('disable_memory_optimization', False)
         # batch_concurrent 会在 parse_init_params 中验证并设置
         self.batch_concurrent = params.get('batch_concurrent', False)
+        self.dialogue_consistency = params.get('dialogue_consistency', False)
         
         self.parse_init_params(params)
         self.result_sub_folder = ''
@@ -141,8 +170,21 @@ class MangaTranslator:
         self._detector_cleanup_task = None
         self.prep_manual = params.get('prep_manual', None)
         self.context_size = params.get('context_size', 0)
+        if not 0 <= self.context_size <= 20:
+            raise ValueError('--context-size must be between 0 and 20')
+        self.page_translation_history: list[PageTranslationContext] = []
+        # Kept as compatibility views for callers that still inspect the old fields.
         self.all_page_translations = []
-        self._original_page_texts = []  # 存储原文页面数据，用于并发模式下的上下文
+        self._original_page_texts = []
+        self._style_guide_cache_path: str | None = None
+        self._style_guide_cache_text = ""
+        self._chapter_source_dir: str | None = None
+        self._chapter_output_dir: str | None = None
+        self._chapter_page_order: list[str] = []
+        self._sidecar_entries_by_page: dict[str, PageTranslationContext] = {}
+        self._relationship_memory = RelationshipMemory()
+        self._hybrid_previous_images: list[Image.Image] = []
+        self._hybrid_page_counter = 0
 
         # 调试图片管理相关属性
         self._current_image_context = None  # 存储当前处理图片的上下文信息
@@ -283,6 +325,11 @@ class MangaTranslator:
             logger.info('Suggestion: Use --batch-size 2 (or higher) with --batch-concurrent, or remove --batch-concurrent flag.')
             # 自动禁用并发模式
             self.batch_concurrent = False
+        if self.dialogue_consistency and self.batch_concurrent:
+            logger.info(
+                'Dialogue consistency enabled: translating chapter pages sequentially'
+            )
+            self.batch_concurrent = False
             
         self.ignore_errors = params.get('ignore_errors', False)
         # check xpu for intel arc, mps for apple silicon, or cuda for nvidia
@@ -357,7 +404,14 @@ class MangaTranslator:
     def using_gpu(self):
         return self.device.startswith('cuda') or self.device == 'mps' or self.device == 'xpu'
 
-    async def translate(self, image: Image.Image, config: Config, image_name: str = None, skip_context_save: bool = False) -> Context:
+    async def translate(
+        self,
+        image: Image.Image,
+        config: Config,
+        image_name: str = None,
+        skip_context_save: bool = False,
+        source_image_sha256: str | None = None,
+    ) -> Context:
         """
         Translates a single image.
 
@@ -377,6 +431,8 @@ class MangaTranslator:
         ctx.input = image
         ctx.result = None
         ctx.verbose = self.verbose
+        ctx.page_name = image_name
+        ctx.source_image_sha256 = source_image_sha256
 
         # 设置图片上下文以生成调试图片子文件夹
         self._set_image_context(config, image)
@@ -416,16 +472,12 @@ class MangaTranslator:
 
         # 在翻译流程的最后保存翻译结果，确保保存的是最终结果（包括重试后的结果）
         # Save translation results at the end of translation process to ensure final results are saved
-        if not skip_context_save and ctx.text_regions:
-            # 汇总本页翻译，供下一页做上文
-            page_translations = {r.text_raw if hasattr(r, "text_raw") else r.text: r.translation
-                                 for r in ctx.text_regions}
-            self.all_page_translations.append(page_translations)
-
-            # 同时保存原文用于并发模式的上下文
-            page_original_texts = {i: (r.text_raw if hasattr(r, "text_raw") else r.text)
-                                  for i, r in enumerate(ctx.text_regions)}
-            self._original_page_texts.append(page_original_texts)
+        if not skip_context_save:
+            self._record_page_context(
+                ctx,
+                page_name=image_name,
+                source_image_sha256=source_image_sha256,
+            )
 
         return ctx
 
@@ -918,135 +970,386 @@ class MangaTranslator:
         
         return text_regions
 
-    def _build_prev_context(self, use_original_text=False, current_page_index=None, batch_index=None, batch_original_texts=None):
-        """
-        跳过句子数为0的页面，取最近 context_size 个非空页面，拼成：
-        <|1|>句子
-        <|2|>句子
-        ...
-        的格式；如果没有任何非空页面，返回空串。
+    @staticmethod
+    def _region_source_text(region: Any) -> str:
+        source = getattr(region, "text_raw", None)
+        if not isinstance(source, str) or not source.strip():
+            source = getattr(region, "text", "")
+        return source if isinstance(source, str) else ""
 
-        Args:
-            use_original_text: 是否使用原文而不是译文作为上下文
-            current_page_index: 当前页面索引，用于确定上下文范围
-            batch_index: 当前页面在批次中的索引
-            batch_original_texts: 当前批次的原文数据
-        """
+    def _record_page_context(
+        self,
+        ctx: Context,
+        page_name: str | None = None,
+        source_image_sha256: str | None = None,
+    ) -> PageTranslationContext:
+        regions = list(getattr(ctx, "text_regions", None) or [])
+        page = PageTranslationContext(
+            source_lines=[self._region_source_text(region) for region in regions],
+            translated_lines=[
+                self._normalize_translation_unicode(getattr(region, "translation", ""))
+                for region in regions
+            ],
+            page_name=page_name,
+            source_image_sha256=source_image_sha256,
+        )
+        history = getattr(self, "page_translation_history", None)
+        if history is None:
+            self.page_translation_history = history = []
+        if page_name:
+            history[:] = [entry for entry in history if entry.page_name != page_name]
+        history.append(page)
+
+        # Compatibility snapshots. Lists preserve duplicate source strings correctly in
+        # the new history even though the legacy dict view cannot.
+        self.all_page_translations.append(
+            {source: translation for source, translation in zip(page.source_lines, page.translated_lines)}
+        )
+        self._original_page_texts.append(
+            {index: source for index, source in enumerate(page.source_lines)}
+        )
+        if page_name:
+            if not hasattr(self, "_sidecar_entries_by_page"):
+                self._sidecar_entries_by_page = {}
+            self._sidecar_entries_by_page[page_name] = page
+        return page
+
+    @staticmethod
+    def _sha256_file(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as source_file:
+            for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _hybrid_context_enabled(config: Config) -> bool:
+        return (
+            config.translator.translator == Translator.deepseek_gemini_context
+            and config.translator.pronoun_context.enabled
+            and config.translator.pronoun_context.max_fallback_rounds > 0
+        )
+
+    def _requires_sequential_translation(self, config: Config) -> bool:
+        return self.dialogue_consistency or self._hybrid_context_enabled(config)
+
+    def _begin_chapter_context(
+        self,
+        source_dir: str,
+        output_dir: str,
+        config: Config,
+        page_names: list[str],
+        *,
+        reuse_sidecar: bool = True,
+    ) -> None:
+        """Reset chapter-local memory and load safe resume entries from its sidecar."""
+        self.page_translation_history = []
+        self.all_page_translations = []
+        self._original_page_texts = []
+        self._sidecar_entries_by_page = {}
+        self._chapter_source_dir = os.path.abspath(source_dir)
+        self._chapter_output_dir = os.path.abspath(output_dir)
+        self._chapter_page_order = list(page_names)
+        self._style_guide_cache_path = None
+        self._style_guide_cache_text = ""
+        self._relationship_memory = RelationshipMemory()
+        self._hybrid_previous_images = []
+        self._hybrid_page_counter = 0
+        if not self._requires_sequential_translation(config) or not reuse_sidecar:
+            return
+
+        sidecar_path = os.path.join(self._chapter_output_dir, ".translation-context.json")
+        if not os.path.exists(sidecar_path):
+            return
+        try:
+            with open(sidecar_path, "r", encoding="utf-8") as sidecar_file:
+                document = json.load(sidecar_file)
+            if not isinstance(document, dict) or document.get("version") != 1:
+                raise ValueError("unsupported or missing version")
+            if document.get("target_language") != config.translator.target_lang:
+                raise ValueError("target language does not match")
+            if document.get("translator") != str(config.translator.translator):
+                raise ValueError("translator does not match")
+            pages = document.get("pages")
+            if not isinstance(pages, list):
+                raise ValueError("pages must be a list")
+            allowed_names = set(page_names)
+            for raw_page in pages:
+                if not isinstance(raw_page, dict):
+                    raise ValueError("page entry must be an object")
+                page_name = raw_page.get("page")
+                source = raw_page.get("source")
+                translation = raw_page.get("translation")
+                source_hash = raw_page.get("source_image_sha256")
+                if (
+                    not isinstance(page_name, str)
+                    or page_name not in allowed_names
+                    or os.path.basename(page_name) != page_name
+                ):
+                    raise ValueError(f"unknown or unsafe page name: {page_name!r}")
+                if (
+                    not isinstance(source, list)
+                    or not isinstance(translation, list)
+                    or any(not isinstance(line, str) for line in source + translation)
+                    or len(source) != len(translation)
+                ):
+                    raise ValueError(f"unaligned source/translation for {page_name}")
+                source_path = os.path.join(self._chapter_source_dir, page_name)
+                if (
+                    not isinstance(source_hash, str)
+                    or not os.path.isfile(source_path)
+                    or self._sha256_file(source_path) != source_hash
+                ):
+                    logger.warning(
+                        "Ignoring stale translation context for changed source page %s",
+                        page_name,
+                    )
+                    continue
+                self._sidecar_entries_by_page[page_name] = PageTranslationContext(
+                    source_lines=source,
+                    translated_lines=translation,
+                    page_name=page_name,
+                    source_image_sha256=source_hash,
+                )
+            if self._hybrid_context_enabled(config):
+                self._relationship_memory = RelationshipMemory.from_dict(
+                    document.get("relationships", {})
+                )
+            logger.info(
+                "Loaded %s safe page context entr%s for resume",
+                len(self._sidecar_entries_by_page),
+                "y" if len(self._sidecar_entries_by_page) == 1 else "ies",
+            )
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            self._sidecar_entries_by_page = {}
+            logger.warning(
+                "Cannot reuse translation context sidecar %s (%s); rebuilding it",
+                sidecar_path,
+                exc,
+            )
+
+    def _reuse_persisted_page_context(self, source_path: str) -> bool:
+        page_name = os.path.basename(source_path)
+        page = self._sidecar_entries_by_page.get(page_name)
+        if not page or self._sha256_file(source_path) != page.source_image_sha256:
+            return False
+        self.page_translation_history[:] = [
+            entry for entry in self.page_translation_history if entry.page_name != page_name
+        ]
+        self.page_translation_history.append(page)
+        self.all_page_translations.append(
+            dict(zip(page.source_lines, page.translated_lines))
+        )
+        self._original_page_texts.append(dict(enumerate(page.source_lines)))
+        logger.info("Reused bilingual translation context for completed page %s", page_name)
+        return True
+
+    def _persist_translation_context(self, config: Config) -> None:
+        if not self._requires_sequential_translation(config) or not self._chapter_output_dir:
+            return
+        os.makedirs(self._chapter_output_dir, exist_ok=True)
+        ordered_pages = [
+            self._sidecar_entries_by_page[name]
+            for name in self._chapter_page_order
+            if name in self._sidecar_entries_by_page
+        ]
+        document = {
+            "version": 1,
+            "target_language": config.translator.target_lang,
+            "translator": str(config.translator.translator),
+            "pages": [
+                {
+                    "page": page.page_name,
+                    "source_image_sha256": page.source_image_sha256,
+                    "source": page.source_lines,
+                    "translation": page.translated_lines,
+                }
+                for page in ordered_pages
+                if page.page_name
+            ],
+        }
+        if self._hybrid_context_enabled(config):
+            document["relationships"] = self._relationship_memory.to_dict()
+        sidecar_path = os.path.join(self._chapter_output_dir, ".translation-context.json")
+        descriptor, temporary_path = tempfile.mkstemp(
+            prefix=".translation-context-",
+            suffix=".tmp",
+            dir=self._chapter_output_dir,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as sidecar_file:
+                json.dump(document, sidecar_file, ensure_ascii=False, indent=2)
+                sidecar_file.flush()
+                os.fsync(sidecar_file.fileno())
+            os.replace(temporary_path, sidecar_path)
+        except Exception:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
+            raise
+
+    def _history_pages(self) -> list[PageTranslationContext]:
+        history = list(getattr(self, "page_translation_history", []) or [])
+        if history or not getattr(self, "all_page_translations", None):
+            return history
+        # Compatibility migration for older callers/tests. New writes never use this
+        # path, so source/translation pages cannot drift independently.
+        originals = getattr(self, "_original_page_texts", []) or []
+        for index, translations in enumerate(self.all_page_translations):
+            source_values = list(originals[index].values()) if index < len(originals) else list(translations.keys())
+            translated_values = list(translations.values())
+            line_count = min(len(source_values), len(translated_values))
+            history.append(
+                PageTranslationContext(
+                    source_lines=source_values[:line_count],
+                    translated_lines=translated_values[:line_count],
+                )
+            )
+        return history
+
+    @staticmethod
+    def _context_safe_text(value: str) -> str:
+        # Previous context has SOURCE/VI labels, never live <|id|> markers.
+        return value.strip().replace("<|", "<\u200b|")
+
+    def _build_prev_context(self, **_legacy_kwargs: Any) -> str:
+        """Build aligned bilingual history from the most recent non-empty pages."""
         if self.context_size <= 0:
             return ""
-
-        # 在并发模式下，需要特殊处理上下文范围
-        if batch_index is not None and batch_original_texts is not None:
-            # 并发模式：使用已完成的页面 + 当前批次中已处理的页面
-            available_pages = self.all_page_translations.copy()
-
-            # 添加当前批次中在当前页面之前的页面
-            for i in range(batch_index):
-                if i < len(batch_original_texts) and batch_original_texts[i]:
-                    # 在并发模式下，我们使用原文作为"已完成"的页面
-                    if use_original_text:
-                        available_pages.append(batch_original_texts[i])
-                    else:
-                        # 如果不使用原文，则跳过当前批次的页面（因为它们还没有翻译完成）
-                        pass
-        elif current_page_index is not None:
-            # 使用指定页面索引之前的页面作为上下文
-            available_pages = self.all_page_translations[:current_page_index] if self.all_page_translations else []
-        else:
-            # 使用所有已完成的页面
-            available_pages = self.all_page_translations or []
-
-        if not available_pages:
+        non_empty_pages = [page for page in self._history_pages() if not page.is_empty()]
+        tail = non_empty_pages[-self.context_size :]
+        if not tail:
             return ""
+        blocks: list[str] = []
+        for index, page in enumerate(tail):
+            offset = len(tail) - index
+            lines = [f"[PAGE -{offset}]"]
+            for line_number, (source, translation) in enumerate(
+                zip(page.source_lines, page.translated_lines), start=1
+            ):
+                if not source.strip() and not translation.strip():
+                    continue
+                lines.append(f"<SOURCE_{line_number}> {self._context_safe_text(source)}")
+                lines.append(f"<VI_{line_number}> {self._context_safe_text(translation)}")
+                lines.append("")
+            blocks.append("\n".join(lines).rstrip())
+        return (
+            "<PREVIOUS_CONTEXT_DO_NOT_TRANSLATE>\n"
+            + "\n\n".join(blocks)
+            + "\n</PREVIOUS_CONTEXT_DO_NOT_TRANSLATE>"
+        )
 
-        # 筛选出有句子的页面
-        non_empty_pages = [
-            page for page in available_pages
-            if any(sent.strip() for sent in page.values())
-        ]
-        # 实际要用的页数
-        pages_used = min(self.context_size, len(non_empty_pages))
-        if pages_used == 0:
+    def _dialogue_style_guide(self, config: Config) -> str:
+        path = getattr(config.translator, "dialogue_style_guide", None)
+        if not path:
             return ""
-        tail = non_empty_pages[-pages_used:]
+        normalized_path = os.path.abspath(os.path.expanduser(str(path)))
+        if getattr(self, "_style_guide_cache_path", None) != normalized_path:
+            self._style_guide_cache_text = load_style_guide(normalized_path)
+            self._style_guide_cache_path = normalized_path
+            logger.info("Loaded manual dialogue style guide: %s", normalized_path)
+        return self._style_guide_cache_text
 
-        # 拼接 - 根据参数决定使用原文还是译文
-        lines = []
-        for page in tail:
-            for sent in page.values():
-                if sent.strip():
-                    lines.append(sent.strip())
+    def _context_stats(self) -> tuple[int, int]:
+        history = self._history_pages()
+        expected = min(self.context_size, len(history))
+        non_empty = [page for page in history if not page.is_empty()]
+        used = min(self.context_size, len(non_empty))
+        return used, max(0, expected - used)
 
-        # 如果使用原文，需要从原始数据中获取
-        if use_original_text and hasattr(self, '_original_page_texts'):
-            # 尝试获取对应的原文
-            original_lines = []
-            for i, page in enumerate(tail):
-                page_idx = available_pages.index(page)
-                if page_idx < len(self._original_page_texts):
-                    original_page = self._original_page_texts[page_idx]
-                    for sent in original_page.values():
-                        if sent.strip():
-                            original_lines.append(sent.strip())
-            if original_lines:
-                lines = original_lines
+    async def _translate_context_aware(
+        self,
+        config: Config,
+        texts: list[str],
+        ctx: Context,
+        batch_contexts: list[Context] | None = None,
+    ) -> list[str]:
+        from .translators import TRANSLATORS
 
-        numbered = [f"<|{i+1}|>{s}" for i, s in enumerate(lines)]
-        context_type = "original text" if use_original_text else "translation results"
-        return f"Here are the previous {context_type} for reference:\n" + "\n".join(numbered)
+        translator_type = config.translator.translator
+        translator = TRANSLATORS[translator_type]()
+        translator.parse_args(config.translator)
+        previous_context = self._build_prev_context()
+        translator.set_prev_context(previous_context)
+        if hasattr(translator, "set_dialogue_style_guide"):
+            translator.set_dialogue_style_guide(self._dialogue_style_guide(config))
+
+        pages_used, skipped = self._context_stats()
+        if self.context_size > 0:
+            logger.info(
+                "Context-aware translation enabled with %s pages of history",
+                self.context_size,
+            )
+        if pages_used:
+            logger.info(
+                "Carrying %s bilingual page(s), %s aligned sentence(s) as reference",
+                pages_used,
+                previous_context.count("<SOURCE_"),
+            )
+        if skipped:
+            logger.warning("Skipped %s empty context page(s)", skipped)
+
+        source_language = getattr(ctx, "from_lang", None) or "auto"
+        if translator_type == Translator.deepseek_gemini_context:
+            if not hasattr(self, "_relationship_memory"):
+                self._relationship_memory = RelationshipMemory()
+            if not hasattr(self, "_hybrid_previous_images"):
+                self._hybrid_previous_images = []
+            if not hasattr(self, "_hybrid_page_counter"):
+                self._hybrid_page_counter = 0
+            page_number = getattr(ctx, "_hybrid_page_number", None)
+            new_hybrid_page = not isinstance(page_number, int)
+            if new_hybrid_page:
+                page_name = getattr(ctx, "page_name", None)
+                chapter_order = getattr(self, "_chapter_page_order", []) or []
+                if isinstance(page_name, str) and page_name in chapter_order:
+                    page_number = chapter_order.index(page_name) + 1
+                else:
+                    page_number = self._hybrid_page_counter + 1
+                ctx._hybrid_page_number = page_number
+                self._hybrid_page_counter = max(
+                    self._hybrid_page_counter, page_number
+                )
+            page_label = str(getattr(ctx, "page_name", None) or page_number)
+            translated = await translator.translate_page(
+                source_language,
+                config.translator.target_lang,
+                texts,
+                ctx,
+                previous_context=previous_context,
+                style_guide=self._dialogue_style_guide(config),
+                memory=self._relationship_memory,
+                page_number=page_number,
+                page_label=page_label,
+                previous_images=self._hybrid_previous_images,
+            )
+            if self._hybrid_context_enabled(config) and new_hybrid_page:
+                current_image = getattr(ctx, "input", None)
+                if isinstance(current_image, Image.Image):
+                    self._hybrid_previous_images.append(current_image.copy())
+                    keep = config.translator.pronoun_context.previous_pages
+                    self._hybrid_previous_images = (
+                        self._hybrid_previous_images[-keep:] if keep else []
+                    )
+            return translated
+        if translator_type == Translator.chatgpt_2stage:
+            ctx.result_path_callback = self._result_path
+            if batch_contexts and len(batch_contexts) > 1:
+                ctx.batch_contexts = batch_contexts
+            return await translator._translate(
+                source_language, config.translator.target_lang, texts, ctx
+            )
+        return await translator.translate(
+            source_language,
+            config.translator.target_lang,
+            texts,
+            self.use_mtpe,
+        )
 
     async def _dispatch_with_context(self, config: Config, texts: list[str], ctx: Context):
-        # 计算实际要使用的上下文页数和跳过的空页数
-        # Calculate the actual number of context pages to use and empty pages to skip
-        done_pages = self.all_page_translations
-        if self.context_size > 0 and done_pages:
-            pages_expected = min(self.context_size, len(done_pages))
-            non_empty_pages = [
-                page for page in done_pages
-                if any(sent.strip() for sent in page.values())
-            ]
-            pages_used = min(self.context_size, len(non_empty_pages))
-            skipped = pages_expected - pages_used
-        else:
-            pages_used = skipped = 0
-
-        if self.context_size > 0:
-            logger.info(f"Context-aware translation enabled with {self.context_size} pages of history")
-
-        # 构建上下文字符串
-        # Build the context string
-        prev_ctx = self._build_prev_context()
-
-        # 如果是 ChatGPT 或 ChatGPT2Stage 翻译器，则专门处理上下文注入
-        # Special handling for ChatGPT and ChatGPT2Stage translators: inject context
-        if config.translator.translator in [Translator.chatgpt, Translator.chatgpt_2stage]:
-            if config.translator.translator == Translator.chatgpt:
-                from .translators.chatgpt import OpenAITranslator
-                translator = OpenAITranslator()
-            else:  # chatgpt_2stage
-                from .translators.chatgpt_2stage import ChatGPT2StageTranslator
-                translator = ChatGPT2StageTranslator()
-                
-            translator.parse_args(config.translator)
-            translator.set_prev_context(prev_ctx)
-
-            if pages_used > 0:
-                context_count = prev_ctx.count("<|")
-                logger.info(f"Carrying {pages_used} pages of context, {context_count} sentences as translation reference")
-            if skipped > 0:
-                logger.warning(f"Skipped {skipped} pages with no sentences")
-                
-
-            
-            # ChatGPT2Stage 需要传递 ctx 参数，普通 ChatGPT 不需要
-            if config.translator.translator == Translator.chatgpt_2stage:
-                # 添加result_path_callback到Context，让translator可以保存bboxes_fixed.png
-                ctx.result_path_callback = self._result_path
-                return await translator._translate(ctx.from_lang, config.translator.target_lang, texts, ctx)
-            else:
-                return await translator._translate(ctx.from_lang, config.translator.target_lang, texts)
-
-
+        if config.translator.translator in _CONTEXT_AWARE_TRANSLATORS:
+            return await self._translate_context_aware(config, texts, ctx)
         return await dispatch_translation(
             config.translator.translator_gen,
             texts,
@@ -1113,11 +1416,7 @@ class MangaTranslator:
         # If not none translator or none translator without prep_manual  
         if config.translator.translator != Translator.none or not self.prep_manual:  
             for region, translation in zip(ctx.text_regions, translated_sentences):  
-                if config.render.uppercase:  
-                    translation = translation.upper()  
-                elif config.render.lowercase:  
-                    translation = translation.lower()  # 修正：应该是lower而不是upper  
-                region.translation = translation  
+                region.translation = self._format_translation_text(translation, config)
                 region.target_lang = config.translator.target_lang  
                 region._alignment = config.render.alignment  
                 region._direction = config.render.direction  
@@ -1209,7 +1508,9 @@ class MangaTranslator:
         post_replacements = []  
         for region in ctx.text_regions:  
             original = region.translation  
-            region.translation = apply_dictionary(region.translation, post_dict)
+            region.translation = self._normalize_translation_unicode(
+                apply_dictionary(region.translation, post_dict)
+            )
             if original != region.translation:  
                 post_replacements.append(f"{original} => {region.translation}")  
 
@@ -1248,7 +1549,10 @@ class MangaTranslator:
             
             # 页面级目标语言检查（使用过滤后的区域数量）
             page_lang_check_result = True
-            if ctx.text_regions and len(ctx.text_regions) > 5:
+            should_check_page_language = bool(ctx.text_regions) and (
+                config.translator.target_lang == "VIN" or len(ctx.text_regions) > 5
+            )
+            if should_check_page_language:
                 logger.info(f"Starting page-level target language check with {len(ctx.text_regions)} regions...")
                 page_lang_check_result = await self._check_target_language_ratio(
                     ctx.text_regions,
@@ -1285,7 +1589,9 @@ class MangaTranslator:
                                 for i, region in enumerate(ctx.text_regions):
                                     if i < len(new_translations) and new_translations[i]:
                                         old_translation = region.translation
-                                        region.translation = new_translations[i]
+                                        region.translation = self._format_translation_text(
+                                            new_translations[i], config
+                                        )
                                         logger.debug(f"Region {i+1} translation updated: '{old_translation}' -> '{new_translations[i]}'")
                                     
                                 # 重新检查目标语言比例
@@ -1310,7 +1616,11 @@ class MangaTranslator:
                             break
                     
                     if not page_lang_check_result:
-                        logger.error(f"Page-level target language check failed after all {max_batch_retry} batch retries")
+                        raise RuntimeError(
+                            "Page-level target language check failed after "
+                            f"{max_batch_retry} retries; refusing to save non-"
+                            f"{config.translator.target_lang} output"
+                        )
                 else:
                     logger.info("Page-level target language ratio check passed")
             else:
@@ -1364,6 +1674,11 @@ class MangaTranslator:
                                          self.verbose)
 
     async def _run_text_rendering(self, config: Config, ctx: Context):
+        for region in ctx.text_regions or []:
+            region.translation = self._normalize_translation_unicode(
+                region.translation
+            )
+
         current_time = time.time()
         self._model_usage_timestamps[("rendering", config.render.renderer)] = current_time
         if config.render.renderer == Renderer.none:
@@ -1371,13 +1686,28 @@ class MangaTranslator:
         # manga2eng currently only supports horizontal left to right rendering
         elif (config.render.renderer == Renderer.manga2Eng or config.render.renderer == Renderer.manga2EngPillow) and ctx.text_regions and LANGUAGE_ORIENTATION_PRESETS.get(ctx.text_regions[0].target_lang) == 'h':
             if config.render.renderer == Renderer.manga2EngPillow:
-                output = await dispatch_eng_render_pillow(ctx.img_inpainted, ctx.img_rgb, ctx.text_regions, self.font_path, config.render.line_spacing)
+                output = await dispatch_eng_render_pillow(
+                    ctx.img_inpainted,
+                    ctx.img_rgb,
+                    ctx.text_regions,
+                    self.font_path,
+                    config.render.line_spacing,
+                    config.render.disable_font_border,
+                )
             else:
-                output = await dispatch_eng_render(ctx.img_inpainted, ctx.img_rgb, ctx.text_regions, self.font_path, config.render.line_spacing)
+                output = await dispatch_eng_render(
+                    ctx.img_inpainted,
+                    ctx.img_rgb,
+                    ctx.text_regions,
+                    self.font_path,
+                    config.render.line_spacing,
+                    config.render.disable_font_border,
+                )
         else:
             output = await dispatch_rendering(ctx.img_inpainted, ctx.text_regions, self.font_path, config.render.font_size,
                                               config.render.font_size_offset,
-                                              config.render.font_size_minimum, not config.render.no_hyphenation, ctx.render_mask, config.render.line_spacing)
+                                              config.render.font_size_minimum, not config.render.no_hyphenation, ctx.render_mask,
+                                              config.render.line_spacing, config.render.disable_font_border)
         return output
 
     def _result_path(self, path: str) -> str:
@@ -1455,7 +1785,13 @@ class MangaTranslator:
 
         self.add_progress_hook(ph)
 
-    async def translate_batch(self, images_with_configs: List[tuple], batch_size: int = None, image_names: List[str] = None) -> List[Context]:
+    async def translate_batch(
+        self,
+        images_with_configs: List[tuple],
+        batch_size: int = None,
+        image_names: List[str] = None,
+        source_image_hashes: List[str] = None,
+    ) -> List[Context]:
         """
         批量翻译多张图片，在翻译阶段进行批量处理以提高效率
         Args:
@@ -1471,7 +1807,18 @@ class MangaTranslator:
             logger.debug('Batch size <= 1, switching to individual processing mode')
             results = []
             for i, (image, config) in enumerate(images_with_configs):
-                ctx = await self.translate(image, config)  # 单页翻译时正常保存上下文
+                page_name = image_names[i] if image_names and i < len(image_names) else None
+                source_hash = (
+                    source_image_hashes[i]
+                    if source_image_hashes and i < len(source_image_hashes)
+                    else None
+                )
+                ctx = await self.translate(
+                    image,
+                    config,
+                    image_name=page_name,
+                    source_image_sha256=source_hash,
+                )
                 results.append(ctx)
             return results
         
@@ -1522,6 +1869,12 @@ class MangaTranslator:
                     ctx.image_context = self._current_image_context.copy()
                 # 保存verbose标志到Context对象中
                 ctx.verbose = self.verbose
+                ctx.page_name = image_names[i] if image_names and i < len(image_names) else None
+                ctx.source_image_sha256 = (
+                    source_image_hashes[i]
+                    if source_image_hashes and i < len(source_image_hashes)
+                    else None
+                )
                 pre_translation_contexts.append((ctx, config))
                 logger.debug(f'Image {i+1} pre-processing successful')
             except MemoryError as e:
@@ -1582,7 +1935,14 @@ class MangaTranslator:
         # 批量翻译处理
         logger.debug('Starting batch translation phase...')
         try:
-            if self.batch_concurrent:
+            if self._requires_sequential_translation(pre_translation_contexts[0][1]):
+                logger.info(
+                    'Chapter context enabled: translating chapter pages sequentially'
+                )
+                translated_contexts = await self._sequential_translate_contexts(
+                    pre_translation_contexts
+                )
+            elif self.batch_concurrent:
                 logger.info(f'Using concurrent mode for batch translation')
                 translated_contexts = await self._concurrent_translate_contexts(pre_translation_contexts)
             else:
@@ -1605,7 +1965,9 @@ class MangaTranslator:
                         
                         # 将翻译结果应用到各个region
                         for region, translation in zip(ctx.text_regions, translated_texts):
-                            region.translation = translation
+                            region.translation = self._format_translation_text(
+                                translation, config
+                            )
                             region.target_lang = config.translator.target_lang
                             region._alignment = config.render.alignment
                             region._direction = config.render.direction
@@ -1648,16 +2010,12 @@ class MangaTranslator:
 
         # 批处理完成后，保存所有页面的最终翻译结果
         for ctx in results:
-            if ctx.text_regions:
-                # 汇总本页翻译，供下一页做上文
-                page_translations = {r.text_raw if hasattr(r, "text_raw") else r.text: r.translation
-                                     for r in ctx.text_regions}
-                self.all_page_translations.append(page_translations)
-
-                # 同时保存原文用于并发模式的上下文
-                page_original_texts = {i: (r.text_raw if hasattr(r, "text_raw") else r.text)
-                                      for i, r in enumerate(ctx.text_regions)}
-                self._original_page_texts.append(page_original_texts)
+            if not getattr(ctx, "_translation_context_recorded", False):
+                self._record_page_context(
+                    ctx,
+                    page_name=getattr(ctx, "page_name", None),
+                    source_image_sha256=getattr(ctx, "source_image_sha256", None),
+                )
 
         # 清理批量处理的图片上下文缓存
         self._saved_image_contexts.clear()
@@ -1809,6 +2167,44 @@ class MangaTranslator:
 
         return ctx
 
+    async def _sequential_translate_contexts(
+        self, contexts_with_configs: List[tuple]
+    ) -> List[tuple]:
+        """Translate pages in reading order so each page observes the prior result."""
+        results: list[tuple] = []
+        for page_number, (ctx, config) in enumerate(contexts_with_configs, start=1):
+            if not ctx.text_regions:
+                self._record_page_context(
+                    ctx,
+                    page_name=getattr(ctx, "page_name", None),
+                    source_image_sha256=getattr(ctx, "source_image_sha256", None),
+                )
+                ctx._translation_context_recorded = True
+                results.append((ctx, config))
+                continue
+            logger.debug("Sequentially translating chapter page %s", page_number)
+            texts = [region.text for region in ctx.text_regions]
+            translated_texts = await self._batch_translate_texts(texts, config, ctx)
+            if len(translated_texts) != len(texts):
+                raise RuntimeError(
+                    "Translator changed the number of text lines "
+                    f"({len(texts)} input, {len(translated_texts)} output)"
+                )
+            for region, translation in zip(ctx.text_regions, translated_texts):
+                region.translation = self._format_translation_text(translation, config)
+                region.target_lang = config.translator.target_lang
+                region._alignment = config.render.alignment
+                region._direction = config.render.direction
+            ctx.text_regions = await self._apply_post_translation_processing(ctx, config)
+            self._record_page_context(
+                ctx,
+                page_name=getattr(ctx, "page_name", None),
+                source_image_sha256=getattr(ctx, "source_image_sha256", None),
+            )
+            ctx._translation_context_recorded = True
+            results.append((ctx, config))
+        return results
+
     async def _batch_translate_contexts(self, contexts_with_configs: List[tuple], batch_size: int) -> List[tuple]:
         """
         批量处理翻译步骤，防止内存溢出
@@ -1858,7 +2254,9 @@ class MangaTranslator:
                         continue
                     for region_idx, region in enumerate(ctx.text_regions):
                         if text_idx < len(translated_texts):
-                            region.translation = translated_texts[text_idx]
+                            region.translation = self._format_translation_text(
+                                translated_texts[text_idx], config
+                            )
                             region.target_lang = config.translator.target_lang
                             region._alignment = config.render.alignment
                             region._direction = config.render.direction
@@ -1920,7 +2318,10 @@ class MangaTranslator:
                                         for i, (ctx_idx, region) in enumerate(region_mapping):
                                             if i < len(new_translations) and new_translations[i]:
                                                 old_translation = region.translation
-                                                region.translation = new_translations[i]
+                                                retry_config = batch[ctx_idx][1]
+                                                region.translation = self._format_translation_text(
+                                                    new_translations[i], retry_config
+                                                )
                                                 logger.debug(f"Region {i+1} translation updated: '{old_translation}' -> '{new_translations[i]}'")
                                         
                                         # 重新收集所有regions并检查目标语言比例
@@ -2069,7 +2470,9 @@ class MangaTranslator:
                 # 将翻译结果分配回各个region
                 for i, region in enumerate(ctx.text_regions):
                     if i < len(translated_texts):
-                        region.translation = translated_texts[i]
+                        region.translation = self._format_translation_text(
+                            translated_texts[i], config
+                        )
                         region.target_lang = config.translator.target_lang
                         region._alignment = config.render.alignment
                         region._direction = config.render.direction
@@ -2108,7 +2511,9 @@ class MangaTranslator:
                                     for region in ctx.text_regions:
                                         if hasattr(region, 'text') and region.text and text_idx < len(new_translations):
                                             old_translation = region.translation
-                                            region.translation = new_translations[text_idx]
+                                            region.translation = self._format_translation_text(
+                                                new_translations[text_idx], config
+                                            )
                                             logger.debug(f"Region translation updated: '{old_translation}' -> '{new_translations[text_idx]}'")
                                             text_idx += 1
                                     
@@ -2235,120 +2640,24 @@ class MangaTranslator:
         if config.translator.translator == Translator.none:
             return ["" for _ in texts]
 
-
-
-        # 如果是ChatGPT翻译器（包括chatgpt和chatgpt_2stage），需要处理上下文
-        if config.translator.translator in [Translator.chatgpt, Translator.chatgpt_2stage]:
-            if config.translator.translator == Translator.chatgpt:
-                from .translators.chatgpt import OpenAITranslator
-                translator = OpenAITranslator()
-            else:  # chatgpt_2stage
-                from .translators.chatgpt_2stage import ChatGPT2StageTranslator
-                translator = ChatGPT2StageTranslator()
-
-            # 确定是否使用并发模式和原文上下文
-            use_original_text = self.batch_concurrent and self.batch_size > 1
-
-            done_pages = self.all_page_translations
-            if self.context_size > 0 and done_pages:
-                pages_expected = min(self.context_size, len(done_pages))
-                non_empty_pages = [
-                    page for page in done_pages
-                    if any(sent.strip() for sent in page.values())
-                ]
-                pages_used = min(self.context_size, len(non_empty_pages))
-                skipped = pages_expected - pages_used
-            else:
-                pages_used = skipped = 0
-
-            if self.context_size > 0:
-                context_type = "original text" if use_original_text else "translation results"
-                logger.info(f"Context-aware translation enabled with {self.context_size} pages of history using {context_type}")
-
-            translator.parse_args(config.translator)
-
-            # 构建上下文 - 在并发模式下使用原文和页面索引
-            prev_ctx = self._build_prev_context(
-                use_original_text=use_original_text,
-                current_page_index=page_index,
-                batch_index=batch_index,
-                batch_original_texts=batch_original_texts
-            )
-            translator.set_prev_context(prev_ctx)
-
-            if pages_used > 0:
-                context_count = prev_ctx.count("<|")
-                logger.info(f"Carrying {pages_used} pages of context, {context_count} sentences as translation reference")
-            if skipped > 0:
-                logger.warning(f"Skipped {skipped} pages with no sentences")
-
-            # ChatGPT2Stage需要特殊处理
-            if config.translator.translator == Translator.chatgpt_2stage:
-                # 为当前图片创建专用的result_path_callback，避免并发时路径错位
-                current_image_context = getattr(ctx, 'image_context', None) or self._current_image_context
-
-                def result_path_callback(path: str) -> str:
-                    """为特定图片创建结果路径，使用保存的图片上下文"""
-                    original_context = self._current_image_context
-                    self._current_image_context = current_image_context
-                    try:
-                        return self._result_path(path)
-                    finally:
-                        self._current_image_context = original_context
-
-                ctx.result_path_callback = result_path_callback
-
-                # Check if batch processing is enabled and batch_contexts are provided
-                if batch_contexts and len(batch_contexts) > 1 and not self.batch_concurrent:
-                    # Enable batch processing for chatgpt_2stage
-                    ctx.batch_contexts = batch_contexts
-                    logger.info(f"Enabling batch processing for chatgpt_2stage with {len(batch_contexts)} images")
-
-                    # Set result_path_callback for each context in the batch
-                    for batch_ctx in batch_contexts:
-                        if hasattr(batch_ctx, 'image_context'):
-                            batch_image_context = batch_ctx.image_context
-                        else:
-                            batch_image_context = self._current_image_context
-
-                        def create_result_path_callback(image_context):
-                            def result_path_callback(path: str) -> str:
-                                """为特定图片创建结果路径，使用保存的图片上下文"""
-                                original_context = self._current_image_context
-                                self._current_image_context = image_context
-                                try:
-                                    return self._result_path(path)
-                                finally:
-                                    self._current_image_context = original_context
-                            return result_path_callback
-
-                        batch_ctx.result_path_callback = create_result_path_callback(batch_image_context)
-
-                # ChatGPT2Stage需要传递ctx参数
-                return await translator._translate(
-                    ctx.from_lang,
-                    config.translator.target_lang,
-                    texts,
-                    ctx
-                )
-            else:
-                # 普通ChatGPT不需要ctx参数
-                return await translator._translate(
-                    ctx.from_lang,
-                    config.translator.target_lang,
-                    texts
-                )
-
-        else:
-            # 使用通用翻译调度器
-            return await dispatch_translation(
-                config.translator.translator_gen,
+        if config.translator.translator in _CONTEXT_AWARE_TRANSLATORS:
+            return await self._translate_context_aware(
+                config,
                 texts,
-                config.translator,
-                self.use_mtpe,
                 ctx,
-                'cpu' if self._gpu_limited_memory else self.device
+                batch_contexts=batch_contexts,
             )
+
+
+
+        return await dispatch_translation(
+            config.translator.translator_gen,
+            texts,
+            config.translator,
+            self.use_mtpe,
+            ctx,
+            'cpu' if self._gpu_limited_memory else self.device
+        )
             
     async def _apply_post_translation_processing(self, ctx: Context, config: Config) -> List:
         """
@@ -2443,7 +2752,9 @@ class MangaTranslator:
         post_replacements = []  
         for region in ctx.text_regions:  
             original = region.translation  
-            region.translation = apply_dictionary(region.translation, post_dict)
+            region.translation = self._normalize_translation_unicode(
+                apply_dictionary(region.translation, post_dict)
+            )
             if original != region.translation:  
                 post_replacements.append(f"{original} => {region.translation}")  
 
@@ -2479,7 +2790,9 @@ class MangaTranslator:
                         new_translation = await self._retry_translation_with_validation(region, config, ctx)
                         if new_translation:
                             old_translation = region.translation
-                            region.translation = new_translation
+                            region.translation = self._format_translation_text(
+                                new_translation, config
+                            )
                             logger.info(f"Region retry successful: '{old_translation}' -> '{new_translation}'")
                         else:
                             logger.warning(f"Region retry failed, keeping original: '{region.translation}'")
@@ -2653,8 +2966,11 @@ class MangaTranslator:
         Returns:
             bool: True表示通过检查，False表示未通过
         """
-        if not text_regions or len(text_regions) <= 10:
-            # 如果区域数量不超过10个，跳过此检查
+        if not text_regions:
+            return True
+        if len(text_regions) <= 10 and target_lang.upper() != 'VIN':
+            # Keep the legacy threshold for other languages. Vietnamese is checked
+            # even on sparse manga pages so a Chinese response cannot poison history.
             return True
             
         # 合并所有翻译文本
@@ -2662,6 +2978,11 @@ class MangaTranslator:
         for region in text_regions:
             translation = getattr(region, 'translation', '')
             if translation and translation.strip():
+                source = getattr(region, 'text', '')
+                if source and translation.strip().casefold() == source.strip().casefold():
+                    # Preserved SFX/gibberish is allowed and should not determine the
+                    # language of the actual translated dialogue.
+                    continue
                 all_translations.append(translation.strip())
         
         if not all_translations:
@@ -2670,6 +2991,30 @@ class MangaTranslator:
             
         # 将所有翻译合并为一个文本进行检测
         merged_text = ''.join(all_translations)
+
+        if target_lang.upper() == 'VIN':
+            # py3langid is unreliable for very short manga reactions such as
+            # "HẢ!? GÌ CƠ!?". Vietnamese-specific letters are decisive on
+            # these sparse pages, while CJK ideographs indicate the DeepSeek
+            # wrong-language failure this check is intended to prevent.
+            cjk_count = len(re.findall(r'[\u3400-\u4dbf\u4e00-\u9fff]', merged_text))
+            vietnamese_letters = set(
+                'ăâđêôơư'
+                'àáảãạằắẳẵặầấẩẫậ'
+                'èéẻẽẹềếểễệ'
+                'ìíỉĩị'
+                'òóỏõọồốổỗộờớởỡợ'
+                'ùúủũụừứửữự'
+                'ỳýỷỹỵ'
+            )
+            normalized_lower = unicodedata.normalize('NFC', merged_text).lower()
+            vietnamese_mark_count = sum(
+                character in vietnamese_letters for character in normalized_lower
+            )
+            if cjk_count and cjk_count >= max(2, vietnamese_mark_count):
+                return False
+            if vietnamese_mark_count:
+                return True
         
         # logger.info(f'Target language check - Merged text preview (first 200 chars): "{merged_text[:200]}"')
         # logger.info(f'Target language check - Total merged text length: {len(merged_text)} characters')
@@ -2741,7 +3086,10 @@ class MangaTranslator:
         带验证的重试翻译
         Retry translation with validation
         """
-        original_translation = region.translation
+        original_translation = self._format_translation_text(
+            region.translation, config
+        )
+        region.translation = original_translation
         max_attempts = config.translator.post_check_max_retry_attempts
         
         for attempt in range(max_attempts):
@@ -2778,13 +3126,9 @@ class MangaTranslator:
                             'cpu' if self._gpu_limited_memory else self.device
                         )
                         if retranslated:
-                            region.translation = retranslated[0]
-                            
-                            # 应用格式化处理
-                            if config.render.uppercase:
-                                region.translation = region.translation.upper()
-                            elif config.render.lowercase:
-                                region.translation = region.translation.lower()
+                            region.translation = self._format_translation_text(
+                                retranslated[0], config
+                            )
                                 
                             logger.info(f'Re-translation finished: "{region.text}" -> "{region.translation}"')
                         else:
@@ -2803,4 +3147,4 @@ class MangaTranslator:
                 logger.warning(f'Post-translation check failed, maximum retry attempts ({max_attempts}) reached, keeping original translation: "{original_translation}"')
                 region.translation = original_translation
         
-        return region.translation
+        return self._normalize_translation_unicode(region.translation)

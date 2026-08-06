@@ -153,10 +153,31 @@ class MangaTranslatorLocal(MangaTranslator):
             if os.path.exists(_dest) and not os.path.isdir(_dest):
                 raise FileExistsError(_dest)
 
+            chapter_page_names = []
+            for chapter_root, _chapter_subdirs, chapter_files in os.walk(path):
+                if os.path.abspath(chapter_root) != os.path.abspath(path):
+                    continue
+                chapter_page_names.extend(
+                    natural_sort(
+                        [name for name in chapter_files if name.lower() != ".thumb"]
+                    )
+                )
+            self._begin_chapter_context(
+                path,
+                _dest,
+                config,
+                chapter_page_names,
+                reuse_sidecar=not bool(params.get('overwrite')),
+            )
+
             # 检查是否使用批量处理
-            if self.batch_size > 1:
+            if self.batch_size > 1 and not self._requires_sequential_translation(config):
                 await self._translate_folder_batch(path, _dest, params, config, file_ext)
             else:
+                if self._requires_sequential_translation(config):
+                    logger.info(
+                        'Chapter context enabled: translating chapter pages sequentially'
+                    )
                 # 原有的逐个处理方式
                 start_time = time.time()  # 记录开始时间
                 translated_count = 0
@@ -173,6 +194,12 @@ class MangaTranslatorLocal(MangaTranslator):
                         p, ext = os.path.splitext(output_dest)
                         output_dest = f'{p}.{file_ext or ext[1:]}'
                         try:
+                            if not params.get('overwrite') and os.path.exists(output_dest):
+                                if not self._reuse_persisted_page_context(file_path):
+                                    logger.warning(
+                                        'Completed page %s has no reusable bilingual context',
+                                        os.path.basename(file_path),
+                                    )
                             if await self.translate_file(file_path, output_dest, params, config):
                                 translated_count += 1
                         except Exception as e:
@@ -263,8 +290,12 @@ class MangaTranslatorLocal(MangaTranslator):
                 logger.warn(f'Failed to open image: {path}')
                 return False
 
-            # 直接翻译图片，不再需要传递文件名
-            ctx = await self.translate(img, config)
+            ctx = await self.translate(
+                img,
+                config,
+                image_name=os.path.basename(path),
+                source_image_sha256=self._sha256_file(path),
+            )
             result = ctx.result
 
             # TODO
@@ -281,6 +312,7 @@ class MangaTranslatorLocal(MangaTranslator):
                 logger.info(f'Saving "{dest}"')
                 ctx.save_quality = self.save_quality
                 save_result(result, dest, ctx)
+                self._persist_translation_context(config)
                 await self._report_progress('saved', True)
 
                 if self.save_text or self.save_text_file or self.prep_manual:

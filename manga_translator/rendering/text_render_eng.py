@@ -52,7 +52,7 @@ def render_lines(
     canvas_w: int,
     font_size: int,
     stroke_width: int,
-    line_spacing: int = 0.01,
+    line_spacing: float = 0.01,
     fg: Tuple[int] = (0, 0, 0),
     bg: Tuple[int] = (255, 255, 255)) -> Image.Image:
 
@@ -83,7 +83,8 @@ def render_lines(
     line_box = add_color(canvas_text, fg, canvas_border, bg)
 
     # rect
-    x, y, width, height = cv2.boundingRect(canvas_border)
+    bounds_map = canvas_border if stroke_width > 0 else canvas_text
+    x, y, width, height = cv2.boundingRect(bounds_map)
     return Image.fromarray(line_box[y:y+height, x:x+width])
 
     # c = Image.new('RGBA', (canvas_w, canvas_h), color = (0, 0, 0, 0))
@@ -339,7 +340,7 @@ def render_textblock_list_eng(
     font_color = (0, 0, 0),
     stroke_color = (255, 255, 255),
     delimiter: str = ' ',
-    line_spacing: int = 0.01,
+    line_spacing: float = 0.01,
     stroke_width: float = 0.1,
     size_tol: float = 1.0,
     ballonarea_thresh: float = 2,
@@ -357,7 +358,7 @@ def render_textblock_list_eng(
 
     def calculate_font_values(font_size: int, words: List[str]):
         font_size = int(font_size)
-        sw = int(font_size * stroke_width)
+        sw = 0 if disable_font_border else int(font_size * stroke_width)
         line_height = int(font_size * 0.8)
         delimiter_glyph = get_char_glyph(delimiter, font_size, 0)
         delimiter_len = delimiter_glyph.advance.x >> 6
@@ -503,6 +504,8 @@ def render_textblock_list_eng(
             line.pos_y -= canvas_y1
 
         region_font_color, region_stroke_color = region.get_font_colors()
+        if disable_font_border:
+            region_stroke_color = None
 
         textlines_image = render_lines(textlines, canvas_h, canvas_w, font_size, sw, line_spacing, region_font_color, region_stroke_color)
         rel_cx = ((canvas_x1 + canvas_x2) / 2 - rx) / resize_ratio

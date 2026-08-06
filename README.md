@@ -1116,6 +1116,7 @@ FIL: Filipino (Tagalog)
 | caiyun | ✔️ | | Requires `CAIYUN_TOKEN` |
 | openai | ✔️ | | Requires `OPENAI_API_KEY` |
 | deepseek | ✔️ | | Requires `DEEPSEEK_API_KEY` |
+| deepseek_gemini_context | ✔️ | | DeepSeek primary translation with conditional Gemini Vision context; requires `DEEPSEEK_API_KEY` and uses `GEMINI_API_KEY` only for ambiguous pages |
 | groq | ✔️ | | Requires `GROQ_API_KEY` |
 | gemini | ✔️ | | Requires `GEMINI_API_KEY` |
 | papago | | | |
@@ -1189,6 +1190,7 @@ This can achieve further optimization of the translation effect and make it poss
 | `CAIYUN_TOKEN`                         | Caiyun Xiaoyi API access token                                                                           | `''`                               |                                                                                                           |
 | `GEMINI_API_KEY`                       | Gemini API Key                                                                                           | `''`                               |                                                                                                           |
 | `GEMINI_MODEL`                         | Gemini Model name                                                                                        | `'gemini-1.5-flash-002'`           |                                                                                                           |
+| `GEMINI_VISION_MODEL`                  | Gemini model used by `deepseek_gemini_context`                                                           | falls back to `GEMINI_MODEL`       | Can also be set as `translator.pronoun_context.model`                                                     |
 | `DEEPSEEK_API_KEY`                     | DeepSeek API Key                                                                                         | `''`                               |                                                                                                           |
 | `DEEPSEEK_API_BASE`                    | DeepSeek API Base URL                                                                                   | `https://api.deepseek.com`         |                                                                                                           |
 | `DEEPSEEK_MODEL`                       | DeepSeek Model name                                                                                      | `deepseek-chat`                  | Options: `deepseek-chat` or `deepseek-reasoner`                                                           |

@@ -225,10 +225,11 @@ def get_cached_font(path: str) -> freetype.Face:
 def set_font(font_path: str):
     global FONT_SELECTION
     if font_path:
-        selection = [font_path] + FALLBACK_FONTS
+        selection = [font_path]
     else:
         selection = FALLBACK_FONTS
     FONT_SELECTION = [get_cached_font(p) for p in selection]
+    get_char_glyph.cache_clear()
 
 class namespace:
     pass
@@ -538,7 +539,7 @@ def put_char_vertical(font_size: int, cdpt: str, pen_l: Tuple[int, int], canvas_
     # Return vertical advance value  
     return char_offset_y  
 
-def put_text_vertical(font_size: int, text: str, h: int, alignment: str, fg: Tuple[int, int, int], bg: Optional[Tuple[int, int, int]], line_spacing: int):
+def put_text_vertical(font_size: int, text: str, h: int, alignment: str, fg: Tuple[int, int, int], bg: Optional[Tuple[int, int, int]], line_spacing: float):
     text = compact_special_symbols(text)
     if not text :
         return
@@ -1099,7 +1100,7 @@ def put_char_horizontal(font_size: int, cdpt: str, pen_l: Tuple[int, int], canva
 
 def put_text_horizontal(font_size: int, text: str, width: int, height: int, alignment: str,
                         reversed_direction: bool, fg: Tuple[int, int, int], bg: Tuple[int, int, int],
-                        lang: str = 'en_US', hyphenate: bool = True, line_spacing: int = 0):
+                        lang: str = 'en_US', hyphenate: bool = True, line_spacing: float = 0):
     text = compact_special_symbols(text)
     if not text :
         return

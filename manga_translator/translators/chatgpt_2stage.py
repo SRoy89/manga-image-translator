@@ -809,6 +809,15 @@ class ChatGPT2StageTranslator(OpenAITranslator):
         # 如果有上文，添加到系统消息中 / If there is a previous context, add it to the system message        
         if self.prev_context:
             messages.append({'role': 'system', 'content': self.prev_context})            
+        if self.dialogue_style_guide:
+            messages.append({
+                'role': 'system',
+                'content': (
+                    '<MANUAL_DIALOGUE_STYLE_GUIDE_DO_NOT_TRANSLATE>\n'
+                    + self.dialogue_style_guide
+                    + '\n</MANUAL_DIALOGUE_STYLE_GUIDE_DO_NOT_TRANSLATE>'
+                ),
+            })
         
         # 如果需要先给出示例对话
         # Add chat samples if available

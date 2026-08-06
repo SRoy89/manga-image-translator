@@ -21,6 +21,10 @@ share
 .DS_Store
 dev/
 
+# Local commercial font assets (not licensed for redistribution)
+/fonts/MTO-Astro-City.ttf
+/fonts/MTO Astro City.ttf
+
 # Distribution / packaging
 .Python
 build/
@@ -47,6 +51,7 @@ MANIFEST
 # Input and Output
 /input/
 /input-translated/
+/data/
 
 # SSL Used for running server locally
 cert.pem
