@@ -4,9 +4,9 @@
   },
   "detector": {
     "detector": "ctd",
-    "detection_size": 1536,
-    "text_threshold": 0.4,
-    "box_threshold": 0.7,
+    "detection_size": 2560,
+    "text_threshold": 0.2,
+    "box_threshold": 0.4,
     "det_rotate": false,
     "det_auto_rotate": false,
     "det_invert": false,
