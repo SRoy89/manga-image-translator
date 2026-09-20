@@ -13,7 +13,7 @@
     "det_gamma_correct": false
   },
   "ocr": {
-    "ocr": "pororo",
+    "ocr": "48px",
     "text_scale": 32,
     "use_mocr_merge": true,
     "min_text_length": 0,
