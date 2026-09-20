@@ -1,6 +1,7 @@
 {
   "translator": {
-    "translator": "openai"
+    "translator": "openai",
+    "no_text_lang_skip": true
   },
   "detector": {
     "detector": "ctd",
