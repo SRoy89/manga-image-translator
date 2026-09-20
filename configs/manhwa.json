@@ -15,7 +15,7 @@
   },
   "ocr": {
     "ocr": "48px_ctc",
-    "text_scale": 32,
+    "text_scale": 48,
     "use_mocr_merge": false,
     "min_text_length": 0,
     "ignore_bubble": 0
