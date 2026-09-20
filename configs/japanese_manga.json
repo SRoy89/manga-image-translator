@@ -1,6 +1,6 @@
 {
   "translator": {
-    "translator": "none"
+    "translator": "openai"
   },
   "detector": {
     "detector": "ctd",
