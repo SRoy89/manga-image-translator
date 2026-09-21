@@ -24,5 +24,11 @@
     "inpainter": "lama_large",
     "inpainting_size": 2048,
     "inpainting_precision": "bf16"
+  },
+  "render": {
+    "text_align": "center",
+    "direction": "h",
+    "font_size_offset": -3,
+    "font_size_minimum": 8
   }
 }
