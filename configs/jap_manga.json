@@ -16,13 +16,13 @@
   "ocr": {
     "ocr": "mocr",
     "text_scale": 32,
-    "use_mocr_merge": false,
+    "use_mocr_merge": true,
     "min_text_length": 0,
     "ignore_bubble": 0
   },
   "inpainter": {
     "inpainter": "lama_large",
-    "inpainting_size": 2048,
+    "inpainting_size": 1024,
     "inpainting_precision": "bf16"
   },
   "render": {
